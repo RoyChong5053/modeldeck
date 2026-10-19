@@ -12,11 +12,11 @@ clients keep working; you just point `OPENAI_BASE_URL` at `deck` and pick a mode
 
 ## Status
 
-**P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, and entry
-management (discovery, read-only presets, rename/clone/trash with live config write-back).
-Validated by a 31-check smoke suite (`testdata/smoke.sh`) and against a real backend
-(`~/LLM/jina-v5-embed-CPU.sh`). See [`docs/PLAN.md`](docs/PLAN.md) for the full plan
-and roadmap (P1–P3).
+**P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, first-run config
+bootstrap (`deck init` / `start.sh`), and entry management (discovery, read-only presets,
+rename/clone/trash with live config write-back). Validated by a 33-check smoke suite
+(`testdata/smoke.sh`) and against a real backend (`~/LLM/jina-v5-embed-CPU.sh`). See
+[`docs/PLAN.md`](docs/PLAN.md) for the full plan and roadmap (P1–P3).
 
 ## Quick start
 
@@ -25,17 +25,22 @@ git clone https://github.com/RoyChong5053/modeldeck.git
 cd modeldeck
 ./update_build.sh                 # gofmt + vet + build ./deck
 
-# build a config by discovering your existing scripts, or start from the example
-./deck scan -merge ~/.config/modeldeck/entries.yaml
-# cp examples/entries.example.yaml ~/.config/modeldeck/entries.yaml
-
-./start.sh                        # foreground; Ctrl+C stops deck (and its models)
+./start.sh                        # first run: creates the config, then serves
 ```
 
-`start.sh` builds `./deck` if needed and runs `deck serve` in the foreground. On Ctrl+C it
-stops deck and — by default — the models it started; `KEEP=1 ./start.sh` leaves them
-running. No systemd required. `update_build.sh --pull` also does `git pull --ff-only`
-first.
+On the first run `start.sh` builds `./deck`, and if `~/.config/modeldeck/entries.yaml`
+does not exist it creates it by scanning your script dirs (`deck init`: `~/LLM`,
+`~/scripts/LLM/**`, …) and merging in every script it finds with a port. Then it runs
+`deck serve` in the foreground; **Ctrl+C** stops deck and — by default — the models it
+started (`KEEP=1 ./start.sh` leaves them running). No systemd required.
+
+Do it by hand if you prefer:
+
+```sh
+./deck init            # or: ./deck scan -o ~/.config/modeldeck/entries.yaml
+./deck scan -merge ~/.config/modeldeck/entries.yaml   # add newly written scripts later
+# cp examples/entries.example.yaml ~/.config/modeldeck/entries.yaml
+```
 
 Open <http://127.0.0.1:12688> for the dashboard: start/stop/restart, live logs, resources,
 script discovery (**Discover**), read-only **preset** cards, and **rename / clone / trash**.
@@ -53,6 +58,7 @@ CLI:
 
 ```
 deck serve [-config PATH] [-keep]   # -keep leaves models running on exit
+deck init [-dir A,B] [-force]       # create a config by scanning your scripts
 deck validate [-config PATH]
 deck ls                             # live table from a running deck
 deck scan [-dir A,B] [-o FILE | -merge FILE] [-force]
@@ -93,6 +99,10 @@ When a request needs memory that a *busy* entry holds, the request **waits** (FI
 up to `queue_timeout`) instead of interrupting the in-flight request. Only idle, evictable,
 non-pinned entries are evicted. `on_no_fit: reject` returns `503` immediately instead.
 
+`budgets.serialize_unknown_gpu` (default `true`) keeps two GPU entries whose memory has not
+been measured from starting together, so a first run cannot over-commit a small card. Once a
+model's peak is recorded, the normal VRAM budget takes over. Set it to `false` to opt out.
+
 Each entry has an idle `ttl` (seconds, `0` = stay resident). After TTL with no in-flight
 requests, deck runs an optional `stop.hook` (for servers with a self-unload endpoint), then
 `SIGTERM` → grace → `SIGKILL` on the whole process group, then waits for the port (and
@@ -125,10 +135,14 @@ variables, reads `--port` / `--host`, identifies the launched binary and model, 
 `cpu` vs `gpu` placement, and warns about missing model files or missing ports.
 
 ```sh
+deck init                        # one-shot: scan default dirs and write a config
 deck scan                       # list candidates
 deck scan -o entries.yaml       # write a fresh config (refuses to overwrite without -force)
 deck scan -merge ~/.config/…    # merge new scripts into an existing config
 ```
+
+Duplicate ids across directories are disambiguated with a directory hint
+(`gemma4-12b-un-agent-gpu`) or a numeric suffix.
 
 ## Control API
 
@@ -159,7 +173,7 @@ See `examples/entries.example.yaml`. Key fields:
 ```yaml
 server:  { listen: 127.0.0.1:12688, token: "", state_dir: ~/.local/state/modeldeck }
 budgets: { vram_reserve_mb, ram_reserve_mb, max_starting, on_no_fit: queue|reject,
-           queue_timeout, ttl_default }
+           queue_timeout, ttl_default, serialize_unknown_gpu: true }
 entries:
   - id, name, aliases, script, args, env, cwd
     mode: server|job            # job is reserved for P3
@@ -176,8 +190,8 @@ entries:
 
 ```sh
 ./deck serve -config testdata/entries.test.yaml &
-bash testdata/smoke.sh     # 31 checks: routing, lanes, coexistence, TTL, port refusal,
-                           # multipart, discovery, preset, clone, rename, trash
+bash testdata/smoke.sh     # 33 checks: routing, lanes, coexistence, TTL, port refusal,
+                           # multipart, GPU-serialize, discovery, preset, clone, rename, trash
 ```
 
 The smoke suite mutates the config, so run it against a throwaway copy (the helper

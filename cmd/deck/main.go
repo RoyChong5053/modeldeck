@@ -66,6 +66,8 @@ func main() {
 		runValidate(cfgPath)
 	case "ls":
 		runLS(cfgPath)
+	case "init":
+		runInit(cfgPath, rest)
 	case "scan":
 		runScan(cfgPath, rest)
 	case "preset":
@@ -88,6 +90,7 @@ func usage() {
 
 Usage:
   deck serve    [-config PATH] [-keep]   run the scheduler + proxy + WebUI
+  deck init     [-dir A,B] [-force]      create a config by scanning your scripts
   deck validate [-config PATH]           parse and validate the config
   deck ls       [-config PATH]           list entries and live state
   deck scan     [-dir A,B] [-o FILE | -merge FILE] [-force]
@@ -113,9 +116,140 @@ func defaultConfigPath() string {
 	return filepath.Join(base, "modeldeck", "entries.yaml")
 }
 
-func runServe(cfgPath string, keep bool) {
+// uniquifyEntries makes entry ids unique, preferring a parent-directory hint
+// (e.g. "-gpu"/"-cpu") so entries from different dirs stay recognisable.
+func uniquifyEntries(entries []*config.Entry) {
+	used := map[string]bool{}
+	validHint := func(s string) bool {
+		if s == "" || len(s) > 12 {
+			return false
+		}
+		for _, r := range s {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+		return true
+	}
+	for _, e := range entries {
+		if !used[e.ID] {
+			used[e.ID] = true
+			continue
+		}
+		hint := strings.ToLower(filepath.Base(filepath.Dir(e.Script)))
+		if validHint(hint) && !used[e.ID+"-"+hint] {
+			e.ID = e.ID + "-" + hint
+		} else {
+			for i := 2; ; i++ {
+				cand := fmt.Sprintf("%s-%d", e.ID, i)
+				if !used[cand] {
+					e.ID = cand
+					break
+				}
+			}
+		}
+		used[e.ID] = true
+	}
+}
+
+// loadConfig reads the config, printing setup hints when the file is missing.
+func loadConfig(cfgPath string) *config.Config {
 	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "config not found: %s\n\n", cfgPath)
+			fmt.Fprintln(os.Stderr, "create it with one of:")
+			fmt.Fprintf(os.Stderr, "  deck init                    # scan your script dirs and write it\n")
+			fmt.Fprintf(os.Stderr, "  deck scan -o %q\n", cfgPath)
+			fmt.Fprintf(os.Stderr, "  cp examples/entries.example.yaml %q\n", cfgPath)
+			os.Exit(1)
+		}
+		fatal(err)
+	}
+	return cfg
+}
+
+// runInit writes a starter config: entries discovered from your script dirs,
+// or the bundled example when nothing is found.
+func runInit(cfgPath string, rest []string) {
+	var dirs []string
+	force := false
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "-dir" || a == "--dir":
+			if i+1 < len(rest) {
+				dirs = append(dirs, strings.Split(rest[i+1], ",")...)
+				i++
+			}
+		case strings.HasPrefix(a, "-dir="), strings.HasPrefix(a, "--dir="):
+			dirs = append(dirs, strings.Split(a[strings.Index(a, "=")+1:], ",")...)
+		case a == "-force" || a == "--force":
+			force = true
+		default:
+			if !strings.HasPrefix(a, "-") {
+				dirs = append(dirs, a)
+			}
+		}
+	}
+	if _, err := os.Stat(cfgPath); err == nil && !force {
+		fmt.Fprintf(os.Stderr, "config already exists: %s (use -force to overwrite)\n", cfgPath)
+		os.Exit(1)
+	}
+	if len(dirs) == 0 {
+		dirs = scan.DefaultDirs()
+	}
+
+	cands, err := scan.ScanDirs(dirs)
 	fatal(err)
+	var entries []*config.Entry
+	for _, c := range cands {
+		if c.Entry != nil && c.Entry.Port > 0 {
+			entries = append(entries, c.Entry)
+		}
+	}
+	uniquifyEntries(entries)
+
+	if len(entries) == 0 {
+		if ex, err := os.ReadFile("examples/entries.example.yaml"); err == nil {
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err == nil {
+				if err := os.WriteFile(cfgPath, ex, 0o644); err == nil {
+					fmt.Printf("no scripts found in %s\n", strings.Join(dirs, ", "))
+					fmt.Printf("copied examples/entries.example.yaml → %s\n", cfgPath)
+					fmt.Println("edit it to match this machine, then run: ./start.sh")
+					return
+				}
+			}
+		}
+		fmt.Printf("no scripts found in %s; writing a config with no entries\n", strings.Join(dirs, ", "))
+	}
+
+	cfg := &config.Config{
+		Version: 1,
+		Server:  config.Server{Listen: "127.0.0.1:12688", StateDir: defaultStateDir()},
+		Budgets: config.Budgets{
+			VRAMReserveMB: 800, RAMReserveMB: 2500, MaxStarting: 2,
+			OnNoFit: "queue", QueueTimeoutS: 180, TTLDefaultS: 300,
+		},
+		Entries: entries,
+	}
+	cfg.Normalize()
+	fatal(cfg.Validate())
+	fatal(config.Save(cfgPath, cfg))
+
+	fmt.Printf("wrote %s\n", cfgPath)
+	fmt.Printf("  %d entries from: %s\n", len(entries), strings.Join(dirs, ", "))
+	fmt.Println()
+	fmt.Println("next:")
+	fmt.Println("  ./deck validate          # sanity check")
+	fmt.Println("  ./start.sh               # then open http://127.0.0.1:12688")
+	fmt.Println()
+	fmt.Println("note: entries start with unmeasured memory; deck serializes two unmeasured")
+	fmt.Println("      GPU models until their first runs record peaks. Tune budgets.* if needed.")
+}
+
+func runServe(cfgPath string, keep bool) {
+	cfg := loadConfig(cfgPath)
 
 	sup, err := runtime.NewSupervisor(cfg)
 	fatal(err)
@@ -174,11 +308,7 @@ func runServe(cfgPath string, keep bool) {
 }
 
 func runValidate(cfgPath string) {
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "INVALID:", err)
-		os.Exit(1)
-	}
+	cfg := loadConfig(cfgPath)
 	fmt.Printf("OK  %s\n", cfgPath)
 	fmt.Printf("    entries=%d  listen=%s  state_dir=%s\n", len(cfg.Entries), cfg.Server.Listen, cfg.Server.StateDir)
 	warn := 0
@@ -197,8 +327,7 @@ func runValidate(cfgPath string) {
 }
 
 func runLS(cfgPath string) {
-	cfg, err := config.Load(cfgPath)
-	fatal(err)
+	cfg := loadConfig(cfgPath)
 	base := controlBase(cfg)
 	body, err := httpDo(cfg, http.MethodGet, base+"/api/status", nil)
 	fatal(err)
@@ -243,8 +372,7 @@ func runControl(cfgPath, action string, rest []string) {
 		os.Exit(2)
 	}
 	id := rest[0]
-	cfg, err := config.Load(cfgPath)
-	fatal(err)
+	cfg := loadConfig(cfgPath)
 	base := controlBase(cfg)
 	url := fmt.Sprintf("%s/api/entries/%s/%s", base, id, action)
 	body, err := httpDo(cfg, http.MethodPost, url, nil)
@@ -260,8 +388,7 @@ func runEnv(cfgPath string, rest []string) {
 		fmt.Fprintln(os.Stderr, "usage: deck env <id>")
 		os.Exit(2)
 	}
-	cfg, err := config.Load(cfgPath)
-	fatal(err)
+	cfg := loadConfig(cfgPath)
 	id := rest[0]
 	reg := registry.New(cfg)
 	e, ok := reg.ByID(id)
@@ -340,6 +467,7 @@ func runScan(cfgPath string, rest []string) {
 		}
 		entries = append(entries, c.Entry)
 	}
+	uniquifyEntries(entries)
 
 	switch {
 	case out != "":
@@ -433,8 +561,7 @@ func runPreset(cfgPath string, rest []string) {
 		fmt.Fprintln(os.Stderr, "usage: deck preset <id>")
 		os.Exit(2)
 	}
-	cfg, err := config.Load(cfgPath)
-	fatal(err)
+	cfg := loadConfig(cfgPath)
 	reg := registry.New(cfg)
 	id := rest[0]
 	e, ok := reg.ByID(id)

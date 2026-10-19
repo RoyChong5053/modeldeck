@@ -117,6 +117,13 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/chat/completions" \
   -H 'Content-Type: application/json' -d '{"model":"nope","messages":[]}')
 [ "$code" = "404" ]; ck "unknown model -> 404" $?
 
+# 12. unmeasured GPU entries must not run together (first-run safety default)
+chat delta >/dev/null
+[ "$(state_of delta)" = "ready" ]; ck "gpu entry delta ready" $?
+chat epsilon >/dev/null
+{ [ "$(state_of epsilon)" = "ready" ] && [ "$(state_of delta)" != "ready" ]; }
+ck "unmeasured GPU entries serialize (delta evicted for epsilon)" $?
+
 echo
 echo "-- P1: discovery / presets / entry management --"
 

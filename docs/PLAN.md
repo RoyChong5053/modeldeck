@@ -23,7 +23,9 @@
 - [x] P1-c 改名/克隆/回收站：配置原子写回（`.bak`）+ 热重载（`reg.Rebuild` + `sup.SyncRuntimes`），无需重启
 - [x] P1-d 实测资源写回：entry 管理保存配置时一并持久化（独立定时写回仍留待 P2）
 - [x] 便利脚本：`start.sh`（前台运行，Ctrl+C 即停；`KEEP=1` 保留模型）、`update_build.sh`（gofmt+vet+build，`--pull` 可选）
-- [x] 冒烟测试扩展到 31/31（新增 discovery/preset/clone/rename/trash；用临时配置副本，避免污染仓库）
+- [x] 冒烟测试扩展到 33/33（新增 discovery/preset/clone/rename/trash + 未测显存 GPU 串行；用临时配置副本，避免污染仓库）
+- [x] 首次运行体验：`deck init`（扫描默认目录生成配置；重名 id 用目录提示去重）、`start.sh` 缺配置时自动 init；`deck serve` 缺配置时给出明确指引
+- [x] 首跑安全：`budgets.serialize_unknown_gpu`（默认 true）——实测显存未知的两个 GPU entry 不并发，避免 8GB 卡首次并发 OOM
 - [ ] P1-e 预设参数表单写回脚本 → 归入 P2
 - [ ] P2 预设表单写回脚本 + server-selfunload + 资源历史
 - [ ] P3 job 模式 + 旧端口 shim + 多设备 agent
@@ -42,6 +44,8 @@
 - 克隆保留原脚本与端口（同一 lane），仅改 id/name。
 - 扫描启发式：shell 变量替换（`$VAR`/`${VAR}`）→ `exec` 取二进制 → `--port`/`--host`（含 JSON 形式）→ 模型路径 → `-ngl`/`--embeddings` 等 flag → 路径含 `cpu` 或 `-ngl 0` 判 CPU。模型文件不存在、缺端口都会给告警。
 - WebUI 新增 Discover 面板（扫描 + 一键导入）与每行 `预设/改名/克隆/删除`；表格为 keyed 原地更新。
+- 首跑体验：`start.sh` 构建 → 缺配置则 `deck init` 扫描 `~/LLM` 等目录生成 `entries.yaml` → 前台 `serve`；`deck serve` 在配置缺失时直接打印 `deck init`/`deck scan -o`/示例三条指引。
+- 首跑安全：`serialize_unknown_gpu` 默认开启，实测显存未知的 GPU entry 之间互斥（`planLocked` 里作为 hard victim），首次跑完后按实测预算正常并发。
 
 ### P0 落地说明（与计划的偏差）
 
@@ -237,8 +241,8 @@ model 解析顺序：`X-Deck-Model` 头 → `?model=` → JSON body 的 `model` 
 
 ## 10. 下一步（恢复上下文后从这里继续）
 
-P0 全部完成；P1 已落地 a–d（扫描导入 / 只读预设 / 改名克隆回收站 / 资源写回）与便利脚本。
-冒烟 31/31，真机 CPU embed 验证通过。
+P0 全部完成；P1 已落地 a–d（扫描导入 / 只读预设 / 改名克隆回收站 / 资源写回）、便利脚本与首跑引导。
+冒烟 33/33，真机 CPU embed 验证通过。
 
 后续：
 

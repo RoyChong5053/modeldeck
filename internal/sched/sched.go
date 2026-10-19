@@ -302,6 +302,16 @@ func (s *Scheduler) planLocked(e *config.Entry) ([]occupant, bool, string) {
 			add(o)
 		}
 	}
+	// Safety: two GPU entries with unmeasured memory must not start together on
+	// a first run (an 8GB card would OOM). Once measured, the budget decides.
+	if s.cfg.Budgets.SerializeUnknownGPUOn() && e.Placement == "gpu" &&
+		entryVRAM(e, s.sup.Get(e.ID)) == 0 {
+		for _, o := range occ {
+			if o.entry.Placement == "gpu" && o.vram == 0 {
+				add(o)
+			}
+		}
+	}
 
 	// Hard victims must be stoppable right now.
 	for _, o := range occ {

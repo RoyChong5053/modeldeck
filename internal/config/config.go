@@ -33,6 +33,15 @@ type Budgets struct {
 	OnNoFit       string `yaml:"on_no_fit"`
 	QueueTimeoutS int    `yaml:"queue_timeout"`
 	TTLDefaultS   int    `yaml:"ttl_default"`
+
+	// SerializeUnknownGPU keeps two GPU entries whose memory has not been
+	// measured from starting together (safety default: true).
+	SerializeUnknownGPU *bool `yaml:"serialize_unknown_gpu,omitempty"`
+}
+
+// SerializeUnknownGPUOn reports the effective value (default true).
+func (b Budgets) SerializeUnknownGPUOn() bool {
+	return b.SerializeUnknownGPU == nil || *b.SerializeUnknownGPU
 }
 
 type Ready struct {

@@ -143,12 +143,13 @@ func (s *Server) statusPayload() map[string]any {
 	payload := s.memPayload()
 	payload["entries"] = snaps
 	payload["budgets"] = map[string]any{
-		"vram_reserve_mb": s.cfg.Budgets.VRAMReserveMB,
-		"ram_reserve_mb":  s.cfg.Budgets.RAMReserveMB,
-		"max_starting":    s.cfg.Budgets.MaxStarting,
-		"on_no_fit":       s.cfg.Budgets.OnNoFit,
-		"queue_timeout":   s.cfg.Budgets.QueueTimeoutS,
-		"ttl_default":     s.cfg.Budgets.TTLDefaultS,
+		"vram_reserve_mb":       s.cfg.Budgets.VRAMReserveMB,
+		"ram_reserve_mb":        s.cfg.Budgets.RAMReserveMB,
+		"max_starting":          s.cfg.Budgets.MaxStarting,
+		"on_no_fit":             s.cfg.Budgets.OnNoFit,
+		"queue_timeout":         s.cfg.Budgets.QueueTimeoutS,
+		"ttl_default":           s.cfg.Budgets.TTLDefaultS,
+		"serialize_unknown_gpu": s.cfg.Budgets.SerializeUnknownGPUOn(),
 	}
 	payload["listen"] = s.cfg.Server.Listen
 	return payload

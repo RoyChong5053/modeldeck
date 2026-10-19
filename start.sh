@@ -18,10 +18,11 @@ if [ ! -x "$BIN" ] || [ -n "$(find cmd internal go.mod go.sum -newer "$BIN" -pri
 fi
 
 if [ ! -f "$CONFIG" ]; then
-  echo "config not found: $CONFIG" >&2
-  echo "create one with:  ./deck scan -o \"$CONFIG\"" >&2
-  echo "or copy the example: cp examples/entries.example.yaml \"$CONFIG\"" >&2
-  exit 1
+  echo "config not found: $CONFIG"
+  echo "→ generating it by scanning your scripts (deck init) …"
+  mkdir -p "$(dirname "$CONFIG")"
+  "$BIN" init -config "$CONFIG" || exit 1
+  echo
 fi
 
 ARGS=(serve -config "$CONFIG")

@@ -19,6 +19,7 @@ entries:
     aliases: [a, alpha-alias]
     script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
     port: 21001
+    placement: cpu
     ready: { type: http, path: /health, timeout: 30 }
     ttl: 3
     tags: [test, fake]
@@ -28,6 +29,7 @@ entries:
     aliases: [b]
     script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
     port: 21002
+    placement: cpu
     ready: { type: http, path: /health, timeout: 30 }
     ttl: 3
     tags: [test, fake]
@@ -37,6 +39,27 @@ entries:
     name: Gamma
     script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
     port: 21001
+    placement: cpu
+    ready: { type: http, path: /health, timeout: 30 }
+    ttl: 3
+    tags: [test, fake]
+
+  # Unknown-VRAM GPU entries: the safety default must serialize them until their
+  # memory is measured, so an 8GB card cannot be over-committed on a first run.
+  - id: delta
+    name: Delta
+    script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
+    port: 21003
+    placement: gpu
+    ready: { type: http, path: /health, timeout: 30 }
+    ttl: 3
+    tags: [test, fake]
+
+  - id: epsilon
+    name: Epsilon
+    script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
+    port: 21004
+    placement: gpu
     ready: { type: http, path: /health, timeout: 30 }
     ttl: 3
     tags: [test, fake]
