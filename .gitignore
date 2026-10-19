@@ -1,0 +1,11 @@
+# Build output
+/deck
+/modeldeck
+
+# Local runtime state
+/state/
+*.log
+
+# Editor/OS
+.DS_Store
+*.swp

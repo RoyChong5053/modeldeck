@@ -1,0 +1,42 @@
+version: 1
+
+server:
+  listen: 127.0.0.1:12688
+  token: ""
+  state_dir: /tmp/opencode/modeldeck-state
+
+budgets:
+  vram_reserve_mb: 0
+  ram_reserve_mb: 0
+  max_starting: 3
+  on_no_fit: queue
+  queue_timeout: 20
+  ttl_default: 3
+
+entries:
+  - id: alpha
+    name: Alpha
+    aliases: [a, alpha-alias]
+    script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
+    port: 21001
+    ready: { type: http, path: /health, timeout: 30 }
+    ttl: 3
+    tags: [test, fake]
+
+  - id: beta
+    name: Beta
+    aliases: [b]
+    script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
+    port: 21002
+    ready: { type: http, path: /health, timeout: 30 }
+    ttl: 3
+    tags: [test, fake]
+
+  # Same port as alpha: the lane (hard port uniqueness) must serialize them.
+  - id: gamma
+    name: Gamma
+    script: /home/roychong/mycode/modeldeck/testdata/fake_server.py
+    port: 21001
+    ready: { type: http, path: /health, timeout: 30 }
+    ttl: 3
+    tags: [test, fake]

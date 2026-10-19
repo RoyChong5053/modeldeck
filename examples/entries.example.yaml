@@ -1,0 +1,84 @@
+version: 1
+
+# Bind address. Keep 127.0.0.1 for local-only; use 0.0.0.0 + a token for LAN.
+server:
+  listen: 127.0.0.1:12688
+  token: ""
+  state_dir: ~/.local/state/modeldeck
+  scripts_dir: ~/LLM
+
+budgets:
+  # Kept free so models never push the box into swap/OOM.
+  vram_reserve_mb: 800
+  ram_reserve_mb: 2500
+  max_starting: 2
+  on_no_fit: queue      # queue | reject
+  queue_timeout: 180    # seconds a request may wait for a slot
+  ttl_default: 300      # seconds; per-entry `ttl` overrides
+
+# Every entry is a thin wrapper around ONE existing, hand-tuned script.
+# Ports are the scripts' own ports; entries sharing a port form a "lane"
+# (they can never run at the same time).
+entries:
+  # ---- chat / LLM lane (all these scripts bind 12888) ----
+  - id: gemma4-26b-vl
+    name: "Gemma4 26B-A4B (VLM chat)"
+    aliases: [gemma4, agent]
+    script: ~/LLM/gemma4-qat-26B-A4B-vl-UN-chat.sh
+    port: 12888
+    ready: { type: http, path: /health, timeout: 600 }
+    ttl: 900
+    placement: gpu
+    priority: 10
+    tags: [chat, gpu, gemma4]
+
+  - id: lfm-24b
+    name: "LFM 2.5 24B"
+    script: ~/LLM/lfm-2.5-24B.sh
+    port: 12888                  # same lane as the entry above
+    ready: { type: http, path: /health, timeout: 600 }
+    ttl: 900
+    placement: gpu
+    tags: [chat, gpu]
+
+  # ---- CPU helpers that coexist with a GPU chat model ----
+  - id: embed-jina-cpu
+    name: "Jina v5 embed (CPU)"
+    aliases: [embed, embeddings]
+    script: ~/LLM/jina-v5-embed-CPU.sh
+    port: 11436
+    ready: { type: http, path: /health, timeout: 180 }
+    ttl: 600
+    placement: cpu
+    tags: [embed, cpu]
+
+  - id: rerank-jina-cpu
+    name: "Jina rerank (CPU)"
+    aliases: [rerank]
+    script: ~/LLM/jina-rerank-CPU.sh
+    port: 11437
+    ready: { type: http, path: /health, timeout: 180 }
+    ttl: 600
+    placement: cpu
+    tags: [rerank, cpu]
+
+  # ---- ASR / TTS ----
+  - id: qwen3-asr
+    name: "Qwen3 ASR 0.6B"
+    aliases: [asr, whisper]
+    script: ~/LLM/qwen3-asr.sh
+    port: 11438
+    ready: { type: http, path: /health, timeout: 300 }
+    ttl: 300
+    placement: gpu
+    tags: [asr, gpu]
+
+  - id: qwen3-tts
+    name: "Qwen3 TTS"
+    aliases: [tts, speech]
+    script: ~/LLM/qwen3-tts.sh
+    port: 11439
+    ready: { type: http, path: /health, timeout: 300 }
+    ttl: 300
+    placement: gpu
+    tags: [tts, gpu]

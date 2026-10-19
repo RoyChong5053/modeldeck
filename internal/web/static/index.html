@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ModelDeck</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot" id="dot"></span>
+      <h1>ModelDeck</h1>
+    </div>
+    <div id="summary" class="summary">connecting…</div>
+    <button id="refresh" class="ghost">刷新</button>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Entries</h2>
+        <span id="listen" class="muted"></span>
+      </div>
+      <table id="entries">
+        <thead>
+          <tr>
+            <th>模型</th><th>状态</th><th>端口</th><th>在飞</th>
+            <th>RSS</th><th>VRAM</th><th>空闲</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Budgets</h2></div>
+      <div id="budgets" class="grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Events</h2></div>
+      <pre id="events" class="events"></pre>
+    </section>
+  </main>
+
+  <div id="logmodal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 id="logtitle">logs</h3>
+        <button id="logclose" class="ghost">关闭</button>
+      </div>
+      <pre id="logbody"></pre>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
