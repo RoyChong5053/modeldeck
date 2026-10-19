@@ -37,11 +37,13 @@ function log(msg) {
   const line = new Date().toLocaleTimeString() + "  " + msg;
   el.textContent = (line + "\n" + el.textContent).split("\n").slice(0, 200).join("\n");
 }
+const tail = (p) => (p || "").split("/").pop();
 
 // ---- keyed table rows (updated in place so clicks never hit stale nodes) ----
 const rows = new Map();
 
 function cell() { return document.createElement("td"); }
+function td(v) { const d = document.createElement("td"); d.textContent = v; return d; }
 function button(label, cls, fn) {
   const b = document.createElement("button");
   b.textContent = label;
@@ -69,8 +71,13 @@ function makeRow() {
   refs.stop = button("停止", "", () => actRow(refs.id, "stop"));
   refs.restart = button("重启", "", () => actRow(refs.id, "restart"));
   refs.pin = button("📌 固定", "", () => pinRow(refs.id, !refs.pinned));
+  refs.preset = button("预设", "ghost", () => presetRow(refs.id));
   refs.logs = button("日志", "ghost", () => openLog(refs.id));
-  box.append(refs.start, refs.stop, refs.restart, refs.pin, refs.logs);
+  refs.rename = button("改名", "ghost", () => renameRow(refs.id, refs.title));
+  refs.clone = button("克隆", "ghost", () => cloneRow(refs.id));
+  refs.del = button("删除", "danger", () => deleteRow(refs.id));
+  box.append(refs.start, refs.stop, refs.restart, refs.pin,
+    refs.preset, refs.logs, refs.rename, refs.clone, refs.del);
   act.appendChild(box);
 
   tr.append(refs.name, refs.state, refs.port, refs.inflight, refs.rss, refs.vram, refs.idle, act);
@@ -81,6 +88,7 @@ function updateRow(row, e) {
   const r = row.refs;
   row.id = e.id;
   r.id = e.id;
+  r.title = e.name || e.id;
   row.pinned = !!e.pinned;
   r.pinned = !!e.pinned;
 
@@ -151,6 +159,7 @@ async function refresh() {
   renderBudgets(data.budgets || {});
 }
 
+// ---- entry actions ----
 async function actRow(id, action) {
   log(`${action} ${id} …`);
   const { ok, status, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/${action}?async=1`);
@@ -166,6 +175,118 @@ async function pinRow(id, pinned) {
   setTimeout(refresh, 200);
 }
 
+async function renameRow(id, curName) {
+  const name = prompt("新的显示名", curName || id);
+  if (name === null) return;
+  const newID = prompt("新的 id（留空保持不变，旧 id 会保留为别名）", "");
+  if (newID === null) return;
+  const body = {};
+  if (name !== "") body.name = name;
+  if (newID && newID !== id) body.id = newID;
+  if (!Object.keys(body).length) return;
+  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/rename`, body);
+  if (!ok) { log(`改名失败: ${(data.error && data.error.message) || ""}`); return; }
+  log(`已改名 ${id} → ${data.id}`);
+  rows.clear();
+  $("entries").querySelector("tbody").innerHTML = "";
+  refresh();
+}
+
+async function cloneRow(id) {
+  const newID = prompt("克隆出的新 id", id + "-copy");
+  if (!newID) return;
+  const name = prompt("新显示名（可留空）", "");
+  if (name === null) return;
+  const body = { clone_of: id, id: newID };
+  if (name) body.name = name;
+  const { ok, data } = await api("POST", "/api/entries", body);
+  if (!ok) { log(`克隆失败: ${(data.error && data.error.message) || ""}`); return; }
+  log(`已克隆 ${id} → ${data.id}`);
+  refresh();
+}
+
+async function deleteRow(id) {
+  if (!confirm(`删除 ${id}？\n配置会移入 state/trash 备份，可手动恢复。`)) return;
+  const { ok, data } = await api("DELETE", `/api/entries/${encodeURIComponent(id)}`);
+  if (!ok) { log(`删除失败: ${(data.error && data.error.message) || ""}`); return; }
+  log(`已删除 ${id}（已入回收站）`);
+  rows.delete(id);
+  refresh();
+}
+
+async function presetRow(id) {
+  const { ok, data } = await api("GET", `/api/entries/${encodeURIComponent(id)}/preset`);
+  if (!ok) { log(`读取预设失败: ${(data.error && data.error.message) || ""}`); return; }
+  const p = data.preset || {};
+  const flags = (p.flags && p.flags.length) ? p.flags.join(", ") : "—";
+  const lines = [
+    `entry      : ${data.id}`,
+    `script     : ${data.script}`,
+    `binary     : ${p.binary || "?"}`,
+    `model      : ${p.model || "—"}`,
+    `listen     : ${p.host}:${p.port}  (ready: ${p.ready})`,
+    `placement  : ${p.placement}`,
+    `flags      : ${flags}`,
+  ];
+  for (const w of (p.warnings || [])) lines.push(`warning    : ${w}`);
+  $("presettitle").textContent = "预设 · " + data.id;
+  $("presetbody").textContent = lines.join("\n");
+  $("presetmodal").classList.remove("hidden");
+}
+function closePreset() { $("presetmodal").classList.add("hidden"); }
+
+// ---- discovery ----
+async function doScan() {
+  $("scaninfo").textContent = "扫描中…";
+  const { ok, data } = await api("GET", "/api/scan");
+  if (!ok) { $("scaninfo").textContent = "扫描失败"; return; }
+  const cands = data.candidates || [];
+  const found = cands.filter((c) => c.port).length;
+  $("scaninfo").textContent = `${cands.length} 个脚本 · ${found} 个含端口 · ${(data.dirs || []).join(", ")}`;
+  renderScan(cands);
+}
+
+function renderScan(cands) {
+  const el = $("scanresult");
+  el.innerHTML = "";
+  if (!cands.length) { el.innerHTML = '<div class="muted" style="padding:10px 14px">未发现脚本</div>'; return; }
+  const tbl = document.createElement("table");
+  tbl.innerHTML = "<thead><tr><th>ID</th><th>端口</th><th>位置</th><th>二进制</th><th>脚本</th><th>操作</th></tr></thead>";
+  const tb = document.createElement("tbody");
+  for (const c of cands) {
+    const tr = document.createElement("tr");
+    tr.append(
+      td(c.id),
+      td(c.port || "—"),
+      td(c.placement),
+      td(tail(c.binary) || "?"),
+      td(tail(c.script)),
+    );
+    const act = cell();
+    const b = button(c.configured ? "已导入" : "导入", c.configured ? "" : "primary", () => importCandidate(c));
+    b.disabled = !!c.configured || !c.port;
+    act.appendChild(b);
+    if (c.warnings && c.warnings.length) act.title = c.warnings.join("; ");
+    tr.appendChild(act);
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  el.appendChild(tbl);
+}
+
+async function importCandidate(c) {
+  const body = {
+    id: c.id, name: c.name, script: c.script, port: c.port,
+    host: c.host, placement: c.placement, tags: ["scanned"],
+  };
+  const { ok, data } = await api("POST", "/api/entries", body);
+  if (!ok) { log(`导入 ${c.id} 失败: ${(data.error && data.error.message) || ""}`); return; }
+  log(`已导入 ${data.id}`);
+  doScan();
+  refresh();
+}
+
+// ---- log stream ----
 let logSource = null;
 function openLog(id) {
   if (logSource) { logSource.close(); logSource = null; }
@@ -188,7 +309,12 @@ function closeLog() {
 $("refresh").onclick = refresh;
 $("logclose").onclick = closeLog;
 $("logmodal").onclick = (e) => { if (e.target.id === "logmodal") closeLog(); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeLog(); });
+$("presetclose").onclick = closePreset;
+$("presetmodal").onclick = (e) => { if (e.target.id === "presetmodal") closePreset(); };
+$("scanbtn").onclick = doScan;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeLog(); closePreset(); }
+});
 
 refresh();
 setInterval(refresh, 2000);

@@ -49,6 +49,8 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.ghost { background: transparent; }
+button.danger { background: transparent; color: #f0a8a4; border-color: rgba(248,81,73,.35); }
+button.danger:hover { border-color: var(--bad); color: #ffb4af; }
 button.primary { background: rgba(76,141,255,.15); border-color: rgba(76,141,255,.5); color: #9dc1ff; }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .muted { color: var(--muted); }

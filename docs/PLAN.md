@@ -18,7 +18,13 @@
 - [x] P0-8 真机验证（`~/LLM/jina-v5-embed-CPU.sh`，CPU embed）
   - 冷启动 1.3s，OpenAI `/v1/embeddings` 返回 768 维；RSS 实测回填 133MB，VRAM 0
   - TTL=20s 后自动停止，端口 11436 释放，日志落盘 `<state_dir>/logs/<id>.log`
-- [ ] P1 扫描导入 + 只读预设卡片 + 改名/克隆/回收站
+- [x] P1-a 脚本扫描导入：`deck scan` + `GET /api/scan`（解析变量/`--port`/`--host`/二进制/模型/placement，缺端口或模型给告警）
+- [x] P1-b 只读预设卡片：`deck preset` + `GET /api/entries/{id}/preset` + WebUI 弹窗
+- [x] P1-c 改名/克隆/回收站：配置原子写回（`.bak`）+ 热重载（`reg.Rebuild` + `sup.SyncRuntimes`），无需重启
+- [x] P1-d 实测资源写回：entry 管理保存配置时一并持久化（独立定时写回仍留待 P2）
+- [x] 便利脚本：`start.sh`（前台运行，Ctrl+C 即停；`KEEP=1` 保留模型）、`update_build.sh`（gofmt+vet+build，`--pull` 可选）
+- [x] 冒烟测试扩展到 31/31（新增 discovery/preset/clone/rename/trash；用临时配置副本，避免污染仓库）
+- [ ] P1-e 预设参数表单写回脚本 → 归入 P2
 - [ ] P2 预设表单写回脚本 + server-selfunload + 资源历史
 - [ ] P3 job 模式 + 旧端口 shim + 多设备 agent
 
@@ -27,6 +33,15 @@
 - 浏览器渲染 OK（Dashboard/Entries/Budgets/Events）；入口 `/`、`/static/*` 正常。
 - 表格改为 keyed 原地更新（不再每 2s 重建 DOM），UI 点“启动”可正确拉起 entry。
 - 修过的两个 bug：嵌入静态资源未剥 `/static` 前缀（404）；行按钮闭包读到未赋值的 `refs.id`。
+
+### P1 落地说明
+
+- 热重载路径：`commitEntries` → 校验 → `config.Save`（临时文件 + rename，保留 `.bak`）→ `registry.Rebuild` → `supervisor.SyncRuntimes`（消失的 entry 先停后删，其余刷新 Entry 指针）。全程无需重启；代理与调度器读的是同一份 cfg 指针与可重载 registry。
+- 改名保留旧 id 到 `aliases`；**不改脚本文件**（变体身份只是 deck 的标签，脚本参数才是资产）。
+- 删除会把 entry YAML 写到 `<state_dir>/trash/<时间戳>-<id>.yaml` 再移除。
+- 克隆保留原脚本与端口（同一 lane），仅改 id/name。
+- 扫描启发式：shell 变量替换（`$VAR`/`${VAR}`）→ `exec` 取二进制 → `--port`/`--host`（含 JSON 形式）→ 模型路径 → `-ngl`/`--embeddings` 等 flag → 路径含 `cpu` 或 `-ngl 0` 判 CPU。模型文件不存在、缺端口都会给告警。
+- WebUI 新增 Discover 面板（扫描 + 一键导入）与每行 `预设/改名/克隆/删除`；表格为 keyed 原地更新。
 
 ### P0 落地说明（与计划的偏差）
 
@@ -222,13 +237,15 @@ model 解析顺序：`X-Deck-Model` 头 → `?model=` → JSON body 的 `model` 
 
 ## 10. 下一步（恢复上下文后从这里继续）
 
-P0 已完成并通过冒烟（17/17）+ 真机（CPU embed）验证。后续：
+P0 全部完成；P1 已落地 a–d（扫描导入 / 只读预设 / 改名克隆回收站 / 资源写回）与便利脚本。
+冒烟 31/31，真机 CPU embed 验证通过。
 
-1. 真机再补两个：一个 GPU chat（如 `~/LLM/gemma4-qat-26B-A4B-vl-UN-chat.sh`，端口 12888）
-   与 CPU rerank（11437），验证 VRAM 预算驱逐与 CPU/GPU 共存。
-2. 进入 P1：
-   - 扫描 `~/LLM` 与 `~/scripts/LLM/**` 自动生成 entries 草案（解析 `--port`/`--host`）。
-   - 预设只读卡片（展示脚本参数）。
-   - 改名/克隆/回收站（改名保留旧 id 到 aliases）。
-3. P1 期间顺带把「实测资源写回 entries.yaml」做了（原子写 + 备份）。
-4. 复现/回归：`bash testdata/smoke.sh`（需先 `deck serve -config testdata/entries.test.yaml`）。
+后续：
+
+1. P1-e/P2：预设**表单编辑写回脚本**——改动 `--ctx`/`-ngl`/`--port` 等参数（写回前备份 + `zsh -n` 语法检查 + diff 预览）。
+2. P2：`server-selfunload`（如 audio.cpp `--idle-unload-ms`）与资源历史曲线（Peak 采样时序）。
+3. 真机再补 GPU chat（12888）+ CPU rerank（11437），验证 VRAM 预算驱逐与 CPU/GPU 共存。
+4. P3：job 模式、旧端口 shim、多设备 agent（d3180 Kokoro / lgv35）。
+
+回归方式：`./update_build.sh` 后用 `run_smoke.sh` 或
+`./deck serve -config <临时配置> &` + `bash testdata/smoke.sh`。

@@ -5,6 +5,8 @@ set -uo pipefail
 
 BASE="${BASE:-http://127.0.0.1:12688}"
 CONFIG="${CONFIG:-testdata/entries.test.yaml}"
+STATE_DIR="${STATE_DIR:-/tmp/opencode/modeldeck-state}"
+DECK="${DECK:-/tmp/opencode/deck}"
 pass=0
 fail=0
 
@@ -114,6 +116,49 @@ echo "$out" | grep -q "transcribed by alpha"; ck "multipart model field routes t
 code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/chat/completions" \
   -H 'Content-Type: application/json' -d '{"model":"nope","messages":[]}')
 [ "$code" = "404" ]; ck "unknown model -> 404" $?
+
+echo
+echo "-- P1: discovery / presets / entry management --"
+
+# 12. discovery
+scan=$(curl -s "$BASE/api/scan?dir=$(pwd)/testdata/scan")
+echo "$scan" | grep -q '"candidates"'; ck "GET /api/scan returns candidates" $?
+echo "$scan" | grep -q '22999'; ck "scan found fixture port 22999" $?
+echo "$scan" | grep -q '"cpu"'; ck "scan guessed a CPU placement" $?
+
+# 13. preset card
+pre=$(curl -s "$BASE/api/entries/alpha/preset")
+echo "$pre" | grep -q '"preset"'; ck "GET preset returns parsed script" $?
+
+# 14. clone an entry
+cl=$(curl -s -X POST "$BASE/api/entries" -H 'Content-Type: application/json' \
+  -d '{"clone_of":"alpha","id":"alpha2","name":"Alpha 2"}')
+echo "$cl" | grep -q '"created"'; ck "clone alpha -> alpha2" $?
+curl -s "$BASE/v1/models" | grep -q '"alpha2"'; ck "cloned entry served in /v1/models" $?
+
+# 15. rename (old id is kept as an alias)
+rn=$(curl -s -X POST "$BASE/api/entries/alpha2/rename" -H 'Content-Type: application/json' \
+  -d '{"id":"alpha3","name":"Alpha 3"}')
+echo "$rn" | grep -q '"renamed"'; ck "rename alpha2 -> alpha3" $?
+models=$(curl -s "$BASE/v1/models")
+echo "$models" | grep -q '"alpha3"'; ck "renamed id served" $?
+echo "$models" | grep -q '"alpha2"'; ck "old id kept as alias" $?
+
+# 16. clone keeps the same port (same lane)
+curl -s "$BASE/api/status" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+a=[e for e in d['entries'] if e['id']=='alpha3']
+sys.exit(0 if a and a[0]['port']==21001 else 1)"; ck "clone kept the script port (lane)" $?
+
+# 17. delete -> trash
+dl=$(curl -s -X DELETE "$BASE/api/entries/alpha3")
+echo "$dl" | grep -q '"trashed"'; ck "delete alpha3" $?
+curl -s "$BASE/api/status" | grep -q '"alpha3"'; [ $? -ne 0 ]; ck "deleted entry gone from status" $?
+ls "$STATE_DIR"/trash/ 2>/dev/null | grep -q alpha3; ck "deleted entry written to trash" $?
+
+# 18. config stays valid after mutations
+"$DECK" validate -config "$CONFIG" >/dev/null 2>&1; ck "config still valid after mutations" $?
 
 echo
 echo "== $pass passed, $fail failed =="

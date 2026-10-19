@@ -12,26 +12,35 @@ clients keep working; you just point `OPENAI_BASE_URL` at `deck` and pick a mode
 
 ## Status
 
-**P0 complete** — scheduler + data plane + control API + WebUI dashboard. Validated by a
-17-check smoke suite (`testdata/smoke.sh`) and against a real backend
+**P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, and entry
+management (discovery, read-only presets, rename/clone/trash with live config write-back).
+Validated by a 31-check smoke suite (`testdata/smoke.sh`) and against a real backend
 (`~/LLM/jina-v5-embed-CPU.sh`). See [`docs/PLAN.md`](docs/PLAN.md) for the full plan
 and roadmap (P1–P3).
 
 ## Quick start
 
 ```sh
-cd ~/mycode/modeldeck
-go build -o deck ./cmd/deck
+git clone https://github.com/RoyChong5053/modeldeck.git
+cd modeldeck
+./update_build.sh                 # gofmt + vet + build ./deck
 
-cp examples/entries.example.yaml ~/.config/modeldeck/entries.yaml
-$EDITOR ~/.config/modeldeck/entries.yaml      # point at your scripts and ports
+# build a config by discovering your existing scripts, or start from the example
+./deck scan -merge ~/.config/modeldeck/entries.yaml
+# cp examples/entries.example.yaml ~/.config/modeldeck/entries.yaml
 
-./deck validate                                # parse + sanity check
-./deck serve                                   # scheduler + proxy + WebUI
+./start.sh                        # foreground; Ctrl+C stops deck (and its models)
 ```
 
-Open <http://127.0.0.1:12688> for the dashboard (start/stop/restart/pin, live logs,
-resources). Point a client at the same port:
+`start.sh` builds `./deck` if needed and runs `deck serve` in the foreground. On Ctrl+C it
+stops deck and — by default — the models it started; `KEEP=1 ./start.sh` leaves them
+running. No systemd required. `update_build.sh --pull` also does `git pull --ff-only`
+first.
+
+Open <http://127.0.0.1:12688> for the dashboard: start/stop/restart, live logs, resources,
+script discovery (**Discover**), read-only **preset** cards, and **rename / clone / trash**.
+
+Point a client at the same port:
 
 ```sh
 export OPENAI_BASE_URL=http://127.0.0.1:12688/v1
@@ -46,6 +55,8 @@ CLI:
 deck serve [-config PATH] [-keep]   # -keep leaves models running on exit
 deck validate [-config PATH]
 deck ls                             # live table from a running deck
+deck scan [-dir A,B] [-o FILE | -merge FILE] [-force]
+deck preset <id>                    # show an entry's parsed script preset
 deck start|stop|restart <id>
 deck env <id>                       # prints client env + curl example
 ```
@@ -91,18 +102,51 @@ Processes are started in their own process group with `DECK_ENTRY`, `DECK_PORT`,
 `DECK_URL`, `DECK_PID` injected into the environment. On startup, deck kills orphaned
 children from a previous run (matched by `DECK_ENTRY`/`DECK_PID`).
 
+## Managing variants
+
+Model identity is the entry `id` (plus any `aliases`). Variants are short-lived, so all of
+this is live — no restart, and the config file is rewritten atomically (a `.bak` is kept):
+
+- **rename** (`改名`): changes the id and/or display name. The old id stays as an alias, so
+  existing clients keep working.
+- **clone** (克隆): copies an entry (same script/port/flags) under a new id.
+- **trash** (删除): removes the entry from the config and writes it to
+  `<state_dir>/trash/<timestamp>-<id>.yaml` before dropping it.
+- **preset** (预设): read-only card showing the script's binary, model, port/host, placement
+  and notable flags, parsed from the script itself.
+
+The script is never rewritten: a rename changes only deck's labels, not the script file.
+
+## Discovery
+
+`deck scan` (or the **Discover** panel) walks your script directories (`~/LLM`,
+`~/scripts/LLM/...`), parses each `*.sh`, and produces draft entries: it resolves shell
+variables, reads `--port` / `--host`, identifies the launched binary and model, guesses
+`cpu` vs `gpu` placement, and warns about missing model files or missing ports.
+
+```sh
+deck scan                       # list candidates
+deck scan -o entries.yaml       # write a fresh config (refuses to overwrite without -force)
+deck scan -merge ~/.config/…    # merge new scripts into an existing config
+```
+
 ## Control API
 
 ```
-GET  /api/status                         # entries + budgets + mem + gpu
-GET  /api/mem
-GET  /api/entries
-GET  /api/entries/{id}
-POST /api/entries/{id}/start|stop|restart [?async=1]
-POST /api/entries/{id}/pin               {"pinned": true}
-POST /api/entries/{id}/ttl               {"ttl": 900}
-GET  /api/entries/{id}/logs?tail=200
-GET  /api/entries/{id}/logs/stream       # SSE
+GET    /api/status                         # entries + budgets + mem + gpu
+GET    /api/mem
+GET    /api/entries
+GET    /api/entries/{id}
+POST   /api/entries                        # create; or {"clone_of": id, "id": new}
+POST   /api/entries/{id}/rename            # {"id": new_id, "name": new_name}
+DELETE /api/entries/{id}                   # move to state_dir/trash
+GET    /api/scan?dir=A&dir=B               # discover scripts + draft entries
+GET    /api/entries/{id}/preset            # read-only parsed preset
+POST   /api/entries/{id}/start|stop|restart [?async=1]
+POST   /api/entries/{id}/pin               {"pinned": true}
+POST   /api/entries/{id}/ttl               {"ttl": 900}
+GET    /api/entries/{id}/logs?tail=200
+GET    /api/entries/{id}/logs/stream       # SSE
 ```
 
 If `server.token` is set, `/api`, `/v1`, and `/run` require
@@ -131,20 +175,26 @@ entries:
 ## Tests
 
 ```sh
-./deck validate -config testdata/entries.test.yaml
 ./deck serve -config testdata/entries.test.yaml &
-bash testdata/smoke.sh     # 17 checks: routing, lanes, coexistence, TTL, port refusal, multipart
+bash testdata/smoke.sh     # 31 checks: routing, lanes, coexistence, TTL, port refusal,
+                           # multipart, discovery, preset, clone, rename, trash
 ```
+
+The smoke suite mutates the config, so run it against a throwaway copy (the helper
+`run_smoke.sh` used during development does this automatically).
 
 ## Layout
 
 ```
 cmd/deck            CLI entrypoint
-internal/config     YAML schema, defaults, validation
-internal/registry   id/alias/port index
+internal/config     YAML schema, defaults, validation, atomic save
+internal/registry   id/alias/port index (reloadable)
 internal/runtime    process supervisor, readiness probes, logs, telemetry
 internal/sched      three-layer scheduler + TTL reaper
 internal/proxy      OpenAI data plane + /run passthrough + model extraction
-internal/httpapi    control API + auth + SSE
+internal/httpapi    control API + auth + SSE + entry management
+internal/scan       script discovery / preset parsing
 internal/web        embedded WebUI (plain JS)
+start.sh            foreground launcher (Ctrl+C stops)
+update_build.sh     gofmt + vet + build (+ optional git pull)
 ```

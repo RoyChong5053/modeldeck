@@ -70,6 +70,46 @@ func (s *Supervisor) Get(id string) *Runtime {
 	return s.rts[id]
 }
 
+// EnsureRuntime makes sure a Runtime exists for the entry and refreshes its
+// config pointer. It does not start anything.
+func (s *Supervisor) EnsureRuntime(e *config.Entry) *Runtime {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rt, ok := s.rts[e.ID]; ok {
+		rt.mu.Lock()
+		rt.Entry = e
+		rt.mu.Unlock()
+		return rt
+	}
+	rt := NewRuntime(e, filepath.Join(s.logDir, e.ID+".log"))
+	s.rts[e.ID] = rt
+	return rt
+}
+
+// SyncRuntimes reconciles runtimes with the given entry set: entries that
+// disappeared are stopped and dropped, the rest are ensured.
+func (s *Supervisor) SyncRuntimes(entries []*config.Entry) {
+	want := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		want[e.ID] = true
+	}
+	for _, rt := range s.List() {
+		if !want[rt.Entry.ID] {
+			_ = s.Stop(rt.Entry.ID)
+		}
+	}
+	s.mu.Lock()
+	for id := range s.rts {
+		if !want[id] {
+			delete(s.rts, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, e := range entries {
+		s.EnsureRuntime(e)
+	}
+}
+
 func (s *Supervisor) List() []*Runtime {
 	s.mu.Lock()
 	defer s.mu.Unlock()

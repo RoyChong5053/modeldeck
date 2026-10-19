@@ -55,28 +55,28 @@ type Stop struct {
 
 type Entry struct {
 	ID           string    `yaml:"id"`
-	Name         string    `yaml:"name"`
-	Aliases      []string  `yaml:"aliases"`
+	Name         string    `yaml:"name,omitempty"`
+	Aliases      []string  `yaml:"aliases,omitempty"`
 	Script       string    `yaml:"script"`
-	Args         []string  `yaml:"args"`
-	Env          []string  `yaml:"env"`
-	Cwd          string    `yaml:"cwd"`
-	Mode         string    `yaml:"mode"` // server | job (job reserved for P3)
-	Host         string    `yaml:"host"`
-	Port         int       `yaml:"port"`
-	Ready        Ready     `yaml:"ready"`
-	TTL          *int      `yaml:"ttl"`
-	Placement    string    `yaml:"placement"`
-	Resources    Resources `yaml:"resources"`
-	ManualRes    bool      `yaml:"manual_resources"`
-	Exclusive    bool      `yaml:"exclusive"`
-	Evictable    *bool     `yaml:"evictable"`
-	Pinned       bool      `yaml:"pinned"`
-	Priority     int       `yaml:"priority"`
-	TogetherWith []string  `yaml:"together_with"`
-	MutexWith    []string  `yaml:"mutex_with"`
-	Tags         []string  `yaml:"tags"`
-	Stop         Stop      `yaml:"stop"`
+	Args         []string  `yaml:"args,omitempty"`
+	Env          []string  `yaml:"env,omitempty"`
+	Cwd          string    `yaml:"cwd,omitempty"`
+	Mode         string    `yaml:"mode,omitempty"` // server | job (job reserved for P3)
+	Host         string    `yaml:"host,omitempty"`
+	Port         int       `yaml:"port,omitempty"`
+	Ready        Ready     `yaml:"ready,omitempty"`
+	TTL          *int      `yaml:"ttl,omitempty"`
+	Placement    string    `yaml:"placement,omitempty"`
+	Resources    Resources `yaml:"resources,omitempty"`
+	ManualRes    bool      `yaml:"manual_resources,omitempty"`
+	Exclusive    bool      `yaml:"exclusive,omitempty"`
+	Evictable    *bool     `yaml:"evictable,omitempty"`
+	Pinned       bool      `yaml:"pinned,omitempty"`
+	Priority     int       `yaml:"priority,omitempty"`
+	TogetherWith []string  `yaml:"together_with,omitempty"`
+	MutexWith    []string  `yaml:"mutex_with,omitempty"`
+	Tags         []string  `yaml:"tags,omitempty"`
+	Stop         Stop      `yaml:"stop,omitempty"`
 }
 
 // DisplayName returns Name, falling back to ID.
@@ -263,4 +263,73 @@ func expandHome(p string) string {
 		}
 	}
 	return p
+}
+
+// Clone returns a deep copy of the entry.
+func (e *Entry) Clone() *Entry {
+	c := *e
+	c.Aliases = append([]string(nil), e.Aliases...)
+	c.Args = append([]string(nil), e.Args...)
+	c.Env = append([]string(nil), e.Env...)
+	c.TogetherWith = append([]string(nil), e.TogetherWith...)
+	c.MutexWith = append([]string(nil), e.MutexWith...)
+	c.Tags = append([]string(nil), e.Tags...)
+	if e.TTL != nil {
+		v := *e.TTL
+		c.TTL = &v
+	}
+	if e.Evictable != nil {
+		v := *e.Evictable
+		c.Evictable = &v
+	}
+	return &c
+}
+
+// Save writes the config atomically, keeping a .bak copy of the previous file.
+func Save(path string, c *Config) error {
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	c.Normalize()
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if old, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path+".bak", old, 0o644)
+	}
+	tmp, err := os.CreateTemp(dir, ".entries-*.yaml")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// WriteEntryFile writes a single entry as YAML (used for the trash).
+func WriteEntryFile(path string, e *Entry) error {
+	b, err := yaml.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }

@@ -18,6 +18,7 @@ import (
 	"modeldeck/internal/proxy"
 	"modeldeck/internal/registry"
 	"modeldeck/internal/runtime"
+	"modeldeck/internal/scan"
 	"modeldeck/internal/sched"
 	"modeldeck/internal/web"
 )
@@ -65,6 +66,10 @@ func main() {
 		runValidate(cfgPath)
 	case "ls":
 		runLS(cfgPath)
+	case "scan":
+		runScan(cfgPath, rest)
+	case "preset":
+		runPreset(cfgPath, rest)
 	case "start", "stop", "restart":
 		runControl(cfgPath, cmd, rest)
 	case "env":
@@ -85,6 +90,9 @@ Usage:
   deck serve    [-config PATH] [-keep]   run the scheduler + proxy + WebUI
   deck validate [-config PATH]           parse and validate the config
   deck ls       [-config PATH]           list entries and live state
+  deck scan     [-dir A,B] [-o FILE | -merge FILE] [-force]
+                                         discover scripts and draft entries
+  deck preset   <id>                     show an entry's parsed script preset
   deck start|stop|restart <id>           control one entry on a running deck
   deck env      <id>                     print client env for one entry
   deck version
@@ -270,6 +278,187 @@ func runEnv(cfgPath string, rest []string) {
 	fmt.Printf("  -d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'\n", e.ID)
 	fmt.Println()
 	fmt.Printf("generic passthrough: %s/run/%s/<path>\n", base, e.ID)
+}
+
+func runScan(cfgPath string, rest []string) {
+	var dirs []string
+	out, merge := "", ""
+	force := false
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "-dir" || a == "--dir":
+			if i+1 < len(rest) {
+				dirs = append(dirs, strings.Split(rest[i+1], ",")...)
+				i++
+			}
+		case strings.HasPrefix(a, "-dir="):
+			dirs = append(dirs, strings.Split(strings.TrimPrefix(a, "-dir="), ",")...)
+		case strings.HasPrefix(a, "--dir="):
+			dirs = append(dirs, strings.Split(strings.TrimPrefix(a, "--dir="), ",")...)
+		case a == "-o" || a == "--out":
+			if i+1 < len(rest) {
+				out = rest[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "-o="), strings.HasPrefix(a, "--out="):
+			out = a[strings.Index(a, "=")+1:]
+		case a == "-merge":
+			if i+1 < len(rest) {
+				merge = rest[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "-merge="):
+			merge = strings.TrimPrefix(a, "-merge=")
+		case a == "-force":
+			force = true
+		default:
+			if !strings.HasPrefix(a, "-") {
+				dirs = append(dirs, a)
+			}
+		}
+	}
+	if len(dirs) == 0 {
+		dirs = scan.DefaultDirs()
+	}
+
+	cands, err := scan.ScanDirs(dirs)
+	fatal(err)
+	if len(cands) == 0 {
+		fmt.Println("no scripts found in", strings.Join(dirs, ", "))
+		return
+	}
+
+	printScan(cands)
+
+	entries := make([]*config.Entry, 0, len(cands))
+	skipped := 0
+	for _, c := range cands {
+		if c.Entry == nil || c.Entry.Port == 0 {
+			skipped++
+			continue
+		}
+		entries = append(entries, c.Entry)
+	}
+
+	switch {
+	case out != "":
+		if _, err := os.Stat(out); err == nil && !force {
+			fmt.Fprintf(os.Stderr, "refusing to overwrite %s (use -force)\n", out)
+			os.Exit(1)
+		}
+		cfg := &config.Config{
+			Version: 1,
+			Server:  config.Server{Listen: "127.0.0.1:12688", StateDir: defaultStateDir()},
+			Budgets: config.Budgets{
+				VRAMReserveMB: 800, RAMReserveMB: 2500, MaxStarting: 2,
+				OnNoFit: "queue", QueueTimeoutS: 180, TTLDefaultS: 300,
+			},
+			Entries: entries,
+		}
+		cfg.Normalize()
+		fatal(cfg.Validate())
+		fatal(config.Save(out, cfg))
+		fmt.Printf("\nwrote %d entries to %s\n", len(entries), out)
+	case merge != "":
+		var cfg *config.Config
+		if _, err := os.Stat(merge); err == nil {
+			cfg, err = config.Load(merge)
+			fatal(err)
+		} else {
+			cfg = &config.Config{Version: 1}
+		}
+		haveScript := map[string]bool{}
+		haveID := map[string]bool{}
+		for _, e := range cfg.Entries {
+			haveScript[e.Script] = true
+			haveID[e.ID] = true
+		}
+		added := 0
+		for _, e := range entries {
+			if haveScript[e.Script] {
+				continue
+			}
+			e.ID = uniqueID(e.ID, haveID)
+			haveID[e.ID] = true
+			haveScript[e.Script] = true
+			cfg.Entries = append(cfg.Entries, e)
+			added++
+		}
+		cfg.Normalize()
+		fatal(cfg.Validate())
+		fatal(config.Save(merge, cfg))
+		fmt.Printf("\nmerged %d new entries into %s (backup: %s.bak)\n", added, merge, merge)
+	default:
+		fmt.Printf("\n%d entries with a port found (%d skipped without a port).\n", len(entries), skipped)
+		fmt.Println("write a new config with:  deck scan -o entries.yaml")
+		fmt.Println("merge into an existing:   deck scan -merge ~/.config/modeldeck/entries.yaml")
+	}
+}
+
+func printScan(cands []scan.Candidate) {
+	fmt.Printf("%-26s %-6s %-5s %-9s %-6s %s\n", "ID", "PORT", "PLACE", "READY", "BINARY", "SCRIPT")
+	for _, c := range cands {
+		binary := c.Binary
+		if binary == "" {
+			binary = "?"
+		}
+		fmt.Printf("%-26s %-6d %-5s %-9s %-6s %s\n",
+			c.ID, c.Port, c.Placement, c.Ready, binary, filepath.Base(c.Script))
+		for _, warn := range c.Warnings {
+			fmt.Printf("    ! %s\n", warn)
+		}
+	}
+}
+
+func uniqueID(id string, used map[string]bool) string {
+	if !used[id] {
+		return id
+	}
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s-%d", id, i)
+		if !used[cand] {
+			return cand
+		}
+	}
+}
+
+func defaultStateDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", "modeldeck")
+}
+
+func runPreset(cfgPath string, rest []string) {
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: deck preset <id>")
+		os.Exit(2)
+	}
+	cfg, err := config.Load(cfgPath)
+	fatal(err)
+	reg := registry.New(cfg)
+	id := rest[0]
+	e, ok := reg.ByID(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown entry %q\n", id)
+		os.Exit(1)
+	}
+	c, err := scan.ParseScript(e.Script)
+	fatal(err)
+
+	fmt.Printf("entry      : %s (%s)\n", e.ID, e.DisplayName())
+	fmt.Printf("script     : %s\n", e.Script)
+	fmt.Printf("binary     : %s\n", c.Binary)
+	if c.Model != "" {
+		fmt.Printf("model      : %s\n", c.Model)
+	}
+	fmt.Printf("listen     : %s:%d  (ready: %s)\n", c.Host, c.Port, c.Ready)
+	fmt.Printf("placement  : %s\n", c.Placement)
+	if len(c.Flags) > 0 {
+		fmt.Printf("flags      : %s\n", strings.Join(c.Flags, ", "))
+	}
+	for _, warn := range c.Warnings {
+		fmt.Printf("warning    : %s\n", warn)
+	}
 }
 
 func controlBase(cfg *config.Config) string {
