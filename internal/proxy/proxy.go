@@ -144,6 +144,16 @@ func (s *Service) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.sch.Release(rt)
+	if e.UpstreamModel != "" && e.UpstreamModel != model {
+		cleanup, err := rewriteModel(r, e.UpstreamModel)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "rewrite model: "+err.Error())
+			return
+		}
+	}
 	s.forward(w, r, e.BaseURL(), "")
 }
 
@@ -294,6 +304,122 @@ func (s *Service) extractMultipart(r *http.Request, ct string) (string, func(), 
 	r.Body = f
 	r.ContentLength = n
 	return model, cleanup, nil
+}
+
+// rewriteModel replaces the request's `model` field with upstream, keeping the
+// wire format (JSON or multipart) intact. It returns an optional cleanup func
+// and a nil error when the body needs no change.
+func rewriteModel(r *http.Request, upstream string) (func(), error) {
+	ct := r.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(ct, "application/json"):
+		b, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBody))
+		r.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		// Restore the original body first so the no-op paths stay lossless.
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		r.ContentLength = int64(len(b))
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(b, &body); err != nil {
+			return nil, err
+		}
+		if _, ok := body["model"]; !ok {
+			return nil, nil
+		}
+		raw, err := json.Marshal(upstream)
+		if err != nil {
+			return nil, err
+		}
+		body["model"] = raw
+		nb, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body = io.NopCloser(bytes.NewReader(nb))
+		r.ContentLength = int64(len(nb))
+		r.Header.Del("Content-Length")
+		return nil, nil
+	case strings.HasPrefix(ct, "multipart/form-data"):
+		return rewriteMultipartModel(r, ct, upstream)
+	}
+	return nil, nil
+}
+
+// rewriteMultipartModel rebuilds a multipart body with a different `model`
+// value, reusing the original boundary. The body was already spooled to a
+// temp file by extractMultipart, so this is a disk-to-disk copy.
+func rewriteMultipartModel(r *http.Request, ct, upstream string) (func(), error) {
+	_, params, err := mime.ParseMediaType(ct)
+	if err != nil || params["boundary"] == "" {
+		return nil, nil
+	}
+	boundary := params["boundary"]
+	in, ok := r.Body.(io.ReadSeeker)
+	if !ok {
+		return nil, fmt.Errorf("multipart body is not seekable")
+	}
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	out, err := os.CreateTemp("", "deck-body-rewrite-*")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		out.Close()
+		os.Remove(out.Name())
+	}
+	mw := multipart.NewWriter(out)
+	if err := mw.SetBoundary(boundary); err != nil {
+		cleanup()
+		return nil, err
+	}
+	mr := multipart.NewReader(in, boundary)
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		pw, err := mw.CreatePart(part.Header)
+		if err != nil {
+			part.Close()
+			cleanup()
+			return nil, err
+		}
+		if part.FormName() == "model" {
+			_, err = io.WriteString(pw, upstream)
+		} else {
+			_, err = io.Copy(pw, part)
+		}
+		part.Close()
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		cleanup()
+		return nil, err
+	}
+	st, err := out.Stat()
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	if _, err := out.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	r.Body = out
+	r.ContentLength = st.Size()
+	r.Header.Del("Content-Length")
+	return cleanup, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

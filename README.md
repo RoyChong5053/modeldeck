@@ -34,6 +34,49 @@ does not exist it creates it by scanning your script dirs (`deck init`: `~/LLM`,
 `deck serve` in the foreground; **Ctrl+C** stops deck and — by default — the models it
 started (`KEEP=1 ./start.sh` leaves them running). No systemd required.
 
+### Termux / Android
+
+`deck` is a static Go binary (no CGO), so the same tree runs on a phone. On the phone:
+
+```sh
+pkg install golang          # once
+cd ~/modeldeck              # source copied from the dev machine / git clone
+./start-termux.sh           # build if needed, then serve in the foreground
+```
+
+`start-termux.sh` mirrors `start.sh` plus Android specifics:
+
+| Command | What it does |
+|---|---|
+| `./start-termux.sh` | foreground; **Ctrl+C** stops deck and the models it started |
+| `BG=1 ./start-termux.sh` | detached with `nohup`, log at `~/.local/state/modeldeck/deck.log` |
+| `./start-termux.sh status` | health check + live entry table |
+| `./start-termux.sh logs` | follow the background log |
+| `./start-termux.sh stop` | stop deck (and its models) |
+| `./start-termux.sh restart` | stop, then start in the background |
+
+Environment knobs:
+
+| Var | Default | Notes |
+|---|---|---|
+| `DECK_LISTEN` | `0.0.0.0:12688` | written into the config on start; use `127.0.0.1:12688` for local-only |
+| `DECK_TOKEN` | empty | optional bearer token when exposed on the LAN |
+| `MODELDECK_CONFIG` | `~/.config/modeldeck/entries.yaml` | config path |
+| `KEEP=1` | off | leave started models running when deck exits |
+
+On the first run it creates the config with `deck init` by scanning `~/LLM`. It also
+takes a `termux-wake-lock` so Android does not freeze the process; `stop` releases it.
+Keep the phone on the charger for long runs and exclude Termux from battery optimization.
+
+Two phone-specific caveats:
+
+- `deck init` cannot see ports passed through shell variables
+  (`PORT="${1:-11438}"`, `PORT="${KOKO_PORT:-11435}"`), so it skips those scripts.
+  Add the entries by hand (ASR: port 11438, ready `/health`; Kokoro TTS: port 11435,
+  ready `/healthz`).
+- Scanned scripts on a CPU-only phone are tagged `placement: gpu`; change them to
+  `placement: cpu` so they can run together (the RAM budget still applies).
+
 Do it by hand if you prefer:
 
 ```sh
@@ -82,6 +125,29 @@ Endpoints:
 | `POST /v1/audio/speech`, `/v1/audio/transcriptions` | TTS / ASR |
 | `GET /v1/models` | aggregated ids + aliases |
 | `ANY /run/{id}/{path...}` | generic passthrough for non-standard servers (prefix stripped) |
+
+### Model-name rewriting and gated readiness
+
+Clients often use a friendly model name that the backend itself rejects (for
+example DeskSpirit sends `qwen3-asr`, while speech.cpp only serves
+`Qwen3-ASR-0.6B`). Set `upstream_model` on the entry; deck routes on the client
+name and rewrites the `model` field before proxying (JSON and multipart):
+
+```yaml
+- id: qwen3-asr
+  aliases: [asr, whisper, Qwen3-ASR-0.6B]
+  upstream_model: Qwen3-ASR-0.6B
+  ...
+```
+
+Some servers answer `200` while their model is still loading (Kokoro TTS does).
+Use `ready.pattern` to gate readiness on the response body:
+
+```yaml
+ready: { type: http, path: /healthz, pattern: '"status": "ok"', timeout: 600 }
+```
+
+Without the pattern, the first request after a cold start can hit a `503`.
 
 ## The scheduler
 

@@ -431,9 +431,21 @@ func (s *Supervisor) checkReady(e *config.Entry, rt *Runtime) bool {
 		if err != nil {
 			return false
 		}
-		io.Copy(io.Discard, resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
+		if resp.StatusCode != http.StatusOK {
+			return false
+		}
+		// Ready.Pattern optionally gates readiness on the response body, for
+		// servers that answer 200 while their model is still loading.
+		if e.Ready.Pattern != "" {
+			re, err := regexp.Compile(e.Ready.Pattern)
+			if err != nil {
+				return false
+			}
+			return re.Match(body)
+		}
+		return true
 	case "log":
 		re, err := regexp.Compile(e.Ready.Pattern)
 		if err != nil {

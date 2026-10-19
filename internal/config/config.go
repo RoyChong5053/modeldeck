@@ -63,29 +63,33 @@ type Stop struct {
 }
 
 type Entry struct {
-	ID           string    `yaml:"id"`
-	Name         string    `yaml:"name,omitempty"`
-	Aliases      []string  `yaml:"aliases,omitempty"`
-	Script       string    `yaml:"script"`
-	Args         []string  `yaml:"args,omitempty"`
-	Env          []string  `yaml:"env,omitempty"`
-	Cwd          string    `yaml:"cwd,omitempty"`
-	Mode         string    `yaml:"mode,omitempty"` // server | job (job reserved for P3)
-	Host         string    `yaml:"host,omitempty"`
-	Port         int       `yaml:"port,omitempty"`
-	Ready        Ready     `yaml:"ready,omitempty"`
-	TTL          *int      `yaml:"ttl,omitempty"`
-	Placement    string    `yaml:"placement,omitempty"`
-	Resources    Resources `yaml:"resources,omitempty"`
-	ManualRes    bool      `yaml:"manual_resources,omitempty"`
-	Exclusive    bool      `yaml:"exclusive,omitempty"`
-	Evictable    *bool     `yaml:"evictable,omitempty"`
-	Pinned       bool      `yaml:"pinned,omitempty"`
-	Priority     int       `yaml:"priority,omitempty"`
-	TogetherWith []string  `yaml:"together_with,omitempty"`
-	MutexWith    []string  `yaml:"mutex_with,omitempty"`
-	Tags         []string  `yaml:"tags,omitempty"`
-	Stop         Stop      `yaml:"stop,omitempty"`
+	ID      string   `yaml:"id"`
+	Name    string   `yaml:"name,omitempty"`
+	Aliases []string `yaml:"aliases,omitempty"`
+	Script  string   `yaml:"script"`
+	Args    []string `yaml:"args,omitempty"`
+	Env     []string `yaml:"env,omitempty"`
+	Cwd     string   `yaml:"cwd,omitempty"`
+	Mode    string   `yaml:"mode,omitempty"` // server | job (job reserved for P3)
+	Host    string   `yaml:"host,omitempty"`
+	Port    int      `yaml:"port,omitempty"`
+	// UpstreamModel rewrites the request's `model` field before proxying.
+	// Useful when a client (DeskSpirit, one-api, ...) uses a friendly name
+	// that the model server itself does not accept.
+	UpstreamModel string    `yaml:"upstream_model,omitempty"`
+	Ready         Ready     `yaml:"ready,omitempty"`
+	TTL           *int      `yaml:"ttl,omitempty"`
+	Placement     string    `yaml:"placement,omitempty"`
+	Resources     Resources `yaml:"resources,omitempty"`
+	ManualRes     bool      `yaml:"manual_resources,omitempty"`
+	Exclusive     bool      `yaml:"exclusive,omitempty"`
+	Evictable     *bool     `yaml:"evictable,omitempty"`
+	Pinned        bool      `yaml:"pinned,omitempty"`
+	Priority      int       `yaml:"priority,omitempty"`
+	TogetherWith  []string  `yaml:"together_with,omitempty"`
+	MutexWith     []string  `yaml:"mutex_with,omitempty"`
+	Tags          []string  `yaml:"tags,omitempty"`
+	Stop          Stop      `yaml:"stop,omitempty"`
 }
 
 // DisplayName returns Name, falling back to ID.
