@@ -76,6 +76,8 @@ func main() {
 		runControl(cfgPath, cmd, rest)
 	case "env":
 		runEnv(cfgPath, rest)
+	case "token":
+		runToken(cfgPath)
 	case "version":
 		fmt.Printf("modeldeck deck v%s\n", version.Version)
 	default:
@@ -98,6 +100,7 @@ Usage:
   deck preset   <id>                     show an entry's parsed script preset
   deck start|stop|restart <id>           control one entry on a running deck
   deck env      <id>                     print client env for one entry
+  deck token                              print the access token + one-api channel snippet
   deck version
 
 Default config: ~/.config/modeldeck/entries.yaml (env MODELDECK_CONFIG overrides)
@@ -481,6 +484,68 @@ func runEnv(cfgPath string, rest []string) {
 	}
 	fmt.Println()
 	fmt.Printf("generic passthrough: %s/run/%s/<path>\n", base, e.ID)
+}
+
+// runToken prints everything needed to point a third-party client (one-api,
+// openai-compatible gateways, …) at this deck.
+func runToken(cfgPath string) {
+	cfg := loadConfig(cfgPath)
+	tok := cfg.Server.Token
+	if tok == "" {
+		tok = "(未设置令牌：任何人都能访问 /api /v1 /run)"
+	}
+	fmt.Printf("token      : %s\n", tok)
+	fmt.Printf("本机 base   : %s\n", controlBase(cfg))
+	lan := ""
+	for _, addr := range listenAddrs(cfg.Server.Listen) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			continue
+		}
+		if host == "0.0.0.0" || host == "::" || host == "[::]" {
+			host = "127.0.0.1"
+		}
+		lan = fmt.Sprintf("http://%s:%s", host, port)
+		break
+	}
+	if lan == "" {
+		lan = controlBase(cfg)
+	}
+	fmt.Printf("局域网 base : %s   ← 填到 one-api 渠道\n", lan)
+	for _, u := range webURLs(cfg) {
+		fmt.Printf("webui      : %s\n", u)
+	}
+	fmt.Println()
+	fmt.Println("one-api 渠道（新建渠道时填这些）:")
+	fmt.Printf("  类型     : OpenAI\n")
+	fmt.Printf("  Base URL : %s\n", lan)
+	fmt.Printf("  密钥     : %s\n", cfg.Server.Token)
+	fmt.Printf("  模型     : %s\n", modelNames(cfg))
+	fmt.Println()
+	fmt.Println("客户端直连（在本机跑时）:")
+	fmt.Printf("  OPENAI_BASE_URL=%s/v1\n", controlBase(cfg))
+	fmt.Printf("  OPENAI_API_KEY=%s\n", cfg.Server.Token)
+}
+
+// modelNames lists the model names the deck answers to.
+func modelNames(cfg *config.Config) string {
+	var names []string
+	for _, e := range cfg.Entries {
+		if e.Mode == "job" {
+			continue
+		}
+		names = append(names, e.ID)
+	}
+	if len(names) == 0 {
+		return "(无)"
+	}
+	if len(names) > 12 {
+		return strings.Join(names[:12], ", ") + fmt.Sprintf(" … 共 %d 个", len(names))
+	}
+	return strings.Join(names, ", ")
 }
 
 func runScan(cfgPath string, rest []string) {

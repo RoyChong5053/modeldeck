@@ -133,6 +133,7 @@ deck scan [-dir A,B] [-o FILE | -merge FILE] [-force]
 deck preset <id>                    # show an entry's parsed script preset
 deck start|stop|restart <id>
 deck env <id>                       # prints client env + curl example
+deck token                          # prints the access token + one-api channel snippet
 ```
 
 ## How routing works

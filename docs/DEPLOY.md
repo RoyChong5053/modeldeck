@@ -57,20 +57,62 @@ grep -E '^\s*token:' ~/.config/modeldeck/entries.yaml
 
 ### 2.2 API 客户端（one-api 等）
 
-```
-Base URL : http://192.168.10.1:12688        # 主力机
-Key      : 与 server.token 相同（one-api 会发 Authorization: Bearer <key>）
-模型名   : entry 的 id 或 alias（先 GET /v1/models 拿列表）
-```
+**这里有两个不同的 token，别搞混：**
+
+| token | 在哪 | 谁用 | 值 |
+|---|---|---|---|
+| **deck 令牌**（`server.token`） | 主力机 `~/.config/modeldeck/entries.yaml` | one-api 渠道的「密钥」 | `deck-515c6733b75278fd81a61a3467598ae3` |
+| **one-api 令牌**（`sk-xxx`） | one-api 管理面板 →「令牌」页自己创建 | 你的客户端（chatbox / reitti / 脚本） | one-api 内部生成 |
+
+**不用翻文件**，一条命令全给你：
 
 ```sh
-curl -s http://192.168.10.1:12688/v1/chat/completions \
-  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
-  -d '{"model":"jina-rerank","messages":[{"role":"user","content":"hi"}]}'
+cd ~/mycode/modeldeck && ./deck token
 ```
 
-⚠️ one-api 建渠道时会发一次 chat 做"测试渠道" → 会触发 30–60s 的模型冷启动，
-one-api 那边可能超时。先用 `deck start <id>` 预热，再测渠道。
+```
+token      : deck-515c6733b75278fd81a61a3467598ae3
+本机 base   : http://127.0.0.1:12688
+局域网 base : http://192.168.10.1:12688   ← 填到 one-api 渠道
+webui      : http://127.0.0.1:12688/?token=deck-515c…
+one-api 渠道（新建渠道时填这些）:
+  类型     : OpenAI
+  Base URL : http://192.168.10.1:12688
+  密钥     : deck-515c6733b75278fd81a61a3467598ae3
+  模型     : gemma-rp, gemma4-qat-26b-a4b-vl-un-chat, … 共 59 个
+```
+
+> ⚠️ Base URL **不能填 127.0.0.1**：那是你自己机器的 loopback，
+> m64 上的 one-api 会连到它自己。必须填 `192.168.10.1`（网线直连地址）。
+
+**one-api 建渠道步骤**（m64 上 one-api 跑在 `:3000`，原生二进制
+`~/app/one-api/build/bin/one-api`）：
+
+1. 渠道 → 添加渠道
+2. 类型：`OpenAI`
+3. Base URL：`http://192.168.10.1:12688`
+4. 密钥：`deck-515c6733b75278fd81a61a3467598ae3`
+5. 模型：填要暴露的模型名（= deck 的 entry id，如 `jina-v5-embed`、`jina-rerank`），
+   不要用「一键获取全部」以外的随机串
+6. 分组/优先级按需
+
+**先验证通道再点测试**（测试会触发 30–60s 冷启动，one-api 可能判超时）：
+
+```sh
+# 在主力机上预热
+./deck start jina-v5-embed
+
+# 在 m64 上直连 deck 验证（绕过 one-api）
+curl -s http://192.168.10.1:12688/v1/embeddings \
+  -H "Authorization: Bearer deck-515c6733b75278fd81a61a3467598ae3" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"jina-v5-embed","input":"hello"}'
+```
+
+实测从 m64 走 deck → jina-v5-embed，1.2s 返回真实向量 ✅
+
+> one-api 的「测试渠道」发的是 **chat** 请求。embed/rerank 类模型没有 chat 端点，
+> 测它们要选对应类型的模型，或者在 one-api 里跳过测试直接用。
 
 ### 2.3 防火墙
 
