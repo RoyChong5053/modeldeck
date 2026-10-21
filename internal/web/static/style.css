@@ -164,8 +164,8 @@ button.primary { background: rgba(76,141,255,.15); border-color: rgba(76,141,255
   :root { --hdr: 48px; }
   header { padding: 8px 12px; gap: 8px; }
   .brand h1 { font-size: 15px; }
-  .hostlabel { max-width: 34vw; font-size: 11px; }
-  .summary { font-size: 11px; }
+  .hostlabel { max-width: 46vw; font-size: 11px; }
+  .summary { display: none; } /* the Dashboard strip carries RAM/GPU on phones */
   main { padding: 10px; gap: 10px; }
   .stack { max-height: 38vh; gap: 8px; }
   .grid { display: none; }
