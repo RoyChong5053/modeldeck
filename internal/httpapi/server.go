@@ -118,7 +118,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
 	parts := strings.Split(strings.Trim(rel, "/"), "/")
 	switch parts[0] {
 	case "status":
-		writeJSON(w, http.StatusOK, s.statusPayload())
+		writeJSON(w, http.StatusOK, s.statusPayload(r.RemoteAddr))
 	case "mem":
 		writeJSON(w, http.StatusOK, s.memPayload())
 	case "scan":
@@ -180,7 +180,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
 	}
 }
 
-func (s *Server) statusPayload() map[string]any {
+func (s *Server) statusPayload(remoteAddr string) map[string]any {
 	def := s.cfg.Budgets.TTLDefaultS
 	rts := s.sup.List()
 	snaps := make([]runtime.Snapshot, 0, len(rts))
@@ -200,13 +200,13 @@ func (s *Server) statusPayload() map[string]any {
 		"serialize_unknown_gpu": s.cfg.Budgets.SerializeUnknownGPUOn(),
 	}
 	payload["listen"] = s.cfg.Server.Listen
-	payload["host"] = s.hostPayload()
+	payload["host"] = s.hostPayload(remoteAddr)
 	return payload
 }
 
 // hostPayload describes the machine deck runs on: identity plus live hardware
 // status, so a browser with five deck tabs open can tell them apart.
-func (s *Server) hostPayload() map[string]any {
+func (s *Server) hostPayload(remoteAddr string) map[string]any {
 	gpu := s.sup.GPU()
 	mem := runtime.ReadMem()
 	cpu := runtime.ReadCPU()
@@ -239,7 +239,7 @@ func (s *Server) hostPayload() map[string]any {
 		// The addresses other machines can open: with a wildcard bind this is
 		// every local address (LAN + Tailscale), so a phone can be handed a
 		// link that works.
-		"urls": runtime.ListenURLs(s.cfg.Server.Listen, ""),
+		"urls": runtime.SortURLsByProximity(runtime.ListenURLs(s.cfg.Server.Listen, ""), remoteAddr),
 	}
 }
 

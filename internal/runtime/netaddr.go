@@ -96,3 +96,48 @@ func listenURL(host, port, token string) string {
 	}
 	return u
 }
+
+// SortURLsByProximity moves the URLs that share a subnet with the client to
+// the front. A phone on the WiFi cannot reach the wired address of the same
+// machine, so the link handed to it has to be the one on its own subnet.
+func SortURLsByProximity(urls []string, clientAddr string) []string {
+	host, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		host = clientAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return urls
+	}
+	out := append([]string(nil), urls...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return urlRank(out[i], ip) < urlRank(out[j], ip)
+	})
+	return out
+}
+
+// urlRank scores a URL: 0 when it lives in the client's own /24, 1 otherwise.
+func urlRank(u string, client net.IP) int {
+	host := u
+	if i := strings.Index(u, "://"); i >= 0 {
+		host = u[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?"); i >= 0 {
+		host = host[:i]
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || client == nil {
+		return 1
+	}
+	c4, i4 := client.To4(), ip.To4()
+	if c4 == nil || i4 == nil {
+		return 1
+	}
+	if c4[0] == i4[0] && c4[1] == i4[1] && c4[2] == i4[2] {
+		return 0
+	}
+	return 1
+}
