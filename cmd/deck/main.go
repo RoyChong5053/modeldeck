@@ -264,7 +264,6 @@ func runServe(cfgPath string, keep bool) {
 	api := httpapi.New(cfg, reg, sup, sch, pr, web.Handler())
 
 	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
 		Handler:           api,
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -273,16 +272,23 @@ func runServe(cfgPath string, keep bool) {
 	fmt.Printf("  config : %s\n", cfgPath)
 	fmt.Printf("  state  : %s\n", cfg.Server.StateDir)
 	fmt.Printf("  entries: %d\n", len(cfg.Entries))
+	for _, u := range webURLs(cfg) {
+		fmt.Printf("  WebUI  : %s\n", u)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		ln, err := listenWithFallback(cfg.Server.Listen)
+		lns, err := listenAll(cfg.Server.Listen)
 		if err != nil {
 			errCh <- err
 			return
 		}
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			errCh <- err
+		for _, ln := range lns {
+			go func(ln net.Listener) {
+				if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+					errCh <- err
+				}
+			}(ln)
 		}
 	}()
 
@@ -312,25 +318,61 @@ func runServe(cfgPath string, keep bool) {
 	}
 }
 
-// listenWithFallback binds the configured address. When that address is not
-// available (LAN cable unplugged, address gone), it falls back to loopback so
-// the service still comes up locally instead of crash-looping.
-func listenWithFallback(addr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err == nil {
-		return ln, nil
+// listenAll binds every address in a comma separated list. Addresses that
+// cannot be bound (a LAN cable that is unplugged, an address that is gone)
+// are skipped with a warning as long as at least one listener comes up.
+func listenAll(list string) ([]net.Listener, error) {
+	var out []net.Listener
+	var lastErr error
+	for _, addr := range listenAddrs(list) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			out = append(out, ln)
+			continue
+		}
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "listen %s failed: %v\n", addr, err)
 	}
-	host, port, splitErr := net.SplitHostPort(addr)
-	if splitErr != nil || host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1" {
-		return nil, err
+	if len(out) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no listen address configured")
+		}
+		return nil, lastErr
 	}
-	fallback := net.JoinHostPort("127.0.0.1", port)
-	fmt.Fprintf(os.Stderr, "listen %s failed (%v) → falling back to %s\n", addr, err, fallback)
-	ln2, err2 := net.Listen("tcp", fallback)
-	if err2 != nil {
-		return nil, fmt.Errorf("listen %s: %w (fallback %s: %v)", addr, err, fallback, err2)
+	return out, nil
+}
+
+// listenAddrs splits a listen list into addresses.
+func listenAddrs(list string) []string {
+	var out []string
+	for _, part := range strings.Split(list, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
 	}
-	return ln2, nil
+	return out
+}
+
+// webURLs returns the URLs a human should open, token included when set.
+func webURLs(cfg *config.Config) []string {
+	var out []string
+	for _, addr := range listenAddrs(cfg.Server.Listen) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		switch host {
+		case "0.0.0.0", "::", "[::]", "":
+			host = "127.0.0.1"
+		}
+		u := fmt.Sprintf("http://%s:%s/", host, port)
+		if cfg.Server.Token != "" {
+			u += "?token=" + cfg.Server.Token
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 func runValidate(cfgPath string) {
@@ -622,19 +664,32 @@ func runPreset(cfgPath string, rest []string) {
 	}
 }
 
+// controlBase picks the address a local CLI should talk to: a loopback
+// address when one is configured, otherwise the first one.
 func controlBase(cfg *config.Config) string {
-	host := cfg.Server.Listen
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
+	addrs := listenAddrs(cfg.Server.Listen)
+	fallback := ""
+	for _, addr := range addrs {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		base := fmt.Sprintf("http://%s:%s", host, port)
+		if fallback == "" {
+			fallback = base
+		}
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			return base
+		}
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "127.0.0.1"
+	if fallback == "" {
+		return "http://127.0.0.1:12688"
 	}
-	port := "12688"
-	if i := strings.LastIndex(cfg.Server.Listen, ":"); i >= 0 {
-		port = cfg.Server.Listen[i+1:]
+	// 0.0.0.0 is not an address a client can connect to
+	if strings.HasPrefix(fallback, "http://0.0.0.0:") {
+		return "http://127.0.0.1:" + strings.TrimPrefix(fallback, "http://0.0.0.0:")
 	}
-	return fmt.Sprintf("http://%s:%s", host, port)
+	return fallback
 }
 
 func httpDo(cfg *config.Config, method, url string, body io.Reader) ([]byte, error) {

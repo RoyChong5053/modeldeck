@@ -10,6 +10,9 @@ same time, and releases RAM/VRAM after a configurable idle TTL.
 It speaks an OpenAI-compatible API on one port (default `127.0.0.1:12688`), so existing
 clients keep working; you just point `OPENAI_BASE_URL` at `deck` and pick a model name.
 
+**Deployment notes for the real fleet (6 devices, systemd + Termux, one-api in front)
+live in [`docs/DEPLOY.md`](docs/DEPLOY.md).**
+
 ## Status
 
 **P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, first-run config

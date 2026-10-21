@@ -7,6 +7,7 @@
 
 - [x] 决策收敛（见「已锁定决策」）
 - [x] 计划文档落盘
+- [x] 部署知识文档：`docs/DEPLOY.md`（设备总览/访问方式/更新流程/坑位速查）
 - [x] P0-1 脚手架 + config + registry
 - [x] P0-2 runtime supervisor（启动/就绪/停止/日志/遥测）
 - [x] P0-3 scheduler（三层约束 + 排队）

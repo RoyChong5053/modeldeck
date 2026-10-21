@@ -209,6 +209,22 @@ kill "$TOKDECK" 2>/dev/null
 wait "$TOKDECK" 2>/dev/null
 sleep 0.3
 
+# 21. multi-address listen: every address in the list answers
+MULTIPORT=12692
+MULTICFG="$STATE_DIR/multi-entries.yaml"
+sed "s|^    listen: .*|    listen: 127.0.0.1:$MULTIPORT,127.0.0.1:$((MULTIPORT+1))|" \
+  "$CONFIG" > "$MULTICFG"
+"$DECK" serve -config "$MULTICFG" > "$STATE_DIR/multi-deck.log" 2>&1 &
+MULTIDECK=$!
+sleep 1.5
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MULTIPORT/health")
+[ "$code" = "200" ]; ck "multi-listen: first address answers" $?
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((MULTIPORT+1))/health")
+[ "$code" = "200" ]; ck "multi-listen: second address answers" $?
+kill "$MULTIDECK" 2>/dev/null
+wait "$MULTIDECK" 2>/dev/null
+sleep 0.3
+
 echo
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
