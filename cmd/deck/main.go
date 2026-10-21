@@ -360,8 +360,16 @@ func listenAddrs(list string) []string {
 }
 
 // webURLs returns the URLs a human should open, token included when set.
+//
+// A wildcard bind (0.0.0.0) is expanded into one URL per local address, so
+// the printed links work from a phone on the LAN and over Tailscale.
 func webURLs(cfg *config.Config, token string) []string {
-	var out []string
+	return runtime.ListenURLs(cfg.Server.Listen, token)
+}
+
+// lanBase picks the address a *different* machine should use to reach this
+// deck: a routable local address, never the loopback.
+func lanBase(cfg *config.Config) string {
 	for _, addr := range listenAddrs(cfg.Server.Listen) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -369,15 +377,16 @@ func webURLs(cfg *config.Config, token string) []string {
 		}
 		switch host {
 		case "0.0.0.0", "::", "[::]", "":
-			host = "127.0.0.1"
+			if ips := runtime.LocalIPs(); len(ips) > 0 {
+				return "http://" + ips[0] + ":" + port
+			}
+			continue
+		case "127.0.0.1", "localhost", "::1":
+			continue
 		}
-		u := fmt.Sprintf("http://%s:%s/", host, port)
-		if token != "" {
-			u += "?token=" + token
-		}
-		out = append(out, u)
+		return "http://" + host + ":" + port
 	}
-	return out
+	return controlBase(cfg)
 }
 
 func runValidate(cfgPath string) {
@@ -532,24 +541,7 @@ func runToken(cfgPath string, rest []string) {
 		fmt.Printf("令牌文件   : %s\n", envPath)
 	}
 	fmt.Printf("本机 base   : %s\n", controlBase(cfg))
-	lan := ""
-	for _, addr := range listenAddrs(cfg.Server.Listen) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			continue
-		}
-		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
-			continue
-		}
-		if host == "0.0.0.0" || host == "::" || host == "[::]" {
-			host = "127.0.0.1"
-		}
-		lan = fmt.Sprintf("http://%s:%s", host, port)
-		break
-	}
-	if lan == "" {
-		lan = controlBase(cfg)
-	}
+	lan := lanBase(cfg)
 	fmt.Printf("局域网 base : %s   ← 填到 one-api 渠道\n", lan)
 	for _, u := range webURLs(cfg, realTok) {
 		fmt.Printf("webui      : %s\n", u)

@@ -56,6 +56,10 @@ main {
   display: flex; flex-direction: column; gap: 10px;
   max-height: calc(100vh - var(--hdr) - 12px);
   overflow: auto; scrollbar-width: thin;
+  /* opaque: the entries below scroll *under* this block instead of showing
+     through the gap between the two panels */
+  background: var(--bg);
+  padding-bottom: 2px;
 }
 .stack.folded > .panel:not(.open) { display: none; }
 
@@ -128,15 +132,28 @@ code { background: var(--panel2); border: 1px solid var(--line); border-radius: 
 .bar.warm > i { background: var(--warn); }
 
 /* one-line status strip: the phone version of the dashboard */
-.strip { display: none; gap: 8px; padding: 10px 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.strip { display: none; gap: 8px; padding: 10px 12px; flex-wrap: wrap; }
 .strip .s {
-  flex: 0 0 auto; display: flex; align-items: baseline; gap: 6px; white-space: nowrap;
+  flex: 0 1 auto; display: flex; align-items: baseline; gap: 6px; white-space: nowrap;
   background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px;
-  font-size: 12px; font-variant-numeric: tabular-nums;
+  font-size: 12px; font-variant-numeric: tabular-nums; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis;
 }
 .strip .s b { color: var(--muted); font-weight: 500; font-size: 11px; }
 .strip .s.hot { border-color: rgba(248,81,73,.45); }
 .strip .s.warm { border-color: rgba(210,153,34,.45); }
+
+/* the addresses other machines can open */
+.urls { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.urls a { color: var(--accent); font-size: 13px; text-decoration: none; word-break: break-all; }
+.urls a:hover { text-decoration: underline; }
+.lockbadge { font-size: 12px; }
+.opx {
+  background: transparent; border: none; color: inherit; cursor: pointer;
+  padding: 0 0 0 6px; font-size: 12px; line-height: 1;
+}
+.opx:hover { color: #fff; }
+.tinybtn { padding: 2px 8px; font-size: 11px; }
 
 /* ---------- tables ---------- */
 .tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -173,10 +190,39 @@ button.primary { background: rgba(76,141,255,.15); border-color: rgba(76,141,255
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .modal-head h3 { margin: 0; font-size: 14px; }
+.modal-head-actions { display: flex; gap: 6px; }
+.modal-foot {
+  display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+  padding: 10px 14px; border-top: 1px solid var(--line);
+}
+.modal-foot .muted { margin-right: auto; }
 #logbody, #presetbody {
   flex: 1; margin: 0; padding: 12px 14px; overflow: auto;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
 }
+
+/* ---------- entry editor ---------- */
+.editbody {
+  flex: 1; overflow: auto; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.editrow { display: flex; gap: 10px; flex-wrap: wrap; }
+.editrow .fld { flex: 1 1 140px; }
+.fld { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.fld input, .fld textarea {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 7px 10px; font-size: 13px; width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.fld input:focus, .fld textarea:focus { outline: none; border-color: var(--accent); }
+.fld textarea { resize: vertical; }
+.parsedbox { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.parsedbox summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.parsed {
+  margin: 8px 0 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted); white-space: pre-wrap; overflow-x: auto;
+}
+.editmsg { color: var(--bad); font-size: 12px; min-height: 16px; }
 
 /* ---------- phone ---------- */
 @media (max-width: 760px) {
@@ -186,11 +232,13 @@ button.primary { background: rgba(76,141,255,.15); border-color: rgba(76,141,255
   .hostlabel { max-width: 46vw; font-size: 11px; }
   .summary { display: none; } /* the Dashboard strip carries RAM/GPU on phones */
   main { padding: 10px; gap: 10px; }
-  .stack { max-height: 38vh; gap: 8px; }
+  /* On a phone the page scrolls as one: the panels stay where they are and
+     the entries move with the page, instead of sliding *under* the panels. */
+  .stack { position: static; max-height: none; overflow: visible; gap: 8px; padding-bottom: 0; }
   .grid { display: none; }
   .strip { display: flex; }
   .kv .v { font-size: 13px; }
-  .events { max-height: 88px; padding: 6px 10px 10px; }
+  .events { max-height: 120px; padding: 6px 10px 10px; }
   .events:empty::before { content: "暂无操作记录"; color: var(--muted); font-size: 11px; }
 
   /* tables become stacked cards: no more squeezed columns */
@@ -216,6 +264,7 @@ button.primary { background: rgba(76,141,255,.15); border-color: rgba(76,141,255
   table.responsive td[data-actions] { display: block; }
   table.responsive td[data-actions]::before { content: none; }
   table.responsive .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-  table.responsive .actions button { width: 100%; padding: 8px 4px; }
+  table.responsive .actions button { width: 100%; padding: 8px 2px; font-size: 11px; }
   .modal-box { width: 96vw; height: 82vh; }
+  .modal-foot { flex-wrap: wrap; }
 }

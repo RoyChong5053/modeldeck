@@ -7,7 +7,7 @@ scripts). modeldeck does **not** rewrite or translate them. It treats each scrip
 source of truth, launches it on demand by model name, decides which scripts may run at the
 same time, and releases RAM/VRAM after a configurable idle TTL.
 
-It speaks an OpenAI-compatible API on one port (default `127.0.0.1:12688`), so existing
+It speaks an OpenAI-compatible API on one port (default `0.0.0.0:12688`, all interfaces), so existing
 clients keep working; you just point `OPENAI_BASE_URL` at `deck` and pick a model name.
 
 **Deployment notes for the real fleet (6 devices, systemd + Termux, one-api in front)
@@ -111,7 +111,9 @@ Do it by hand if you prefer:
 ```
 
 Open <http://127.0.0.1:12688> for the dashboard: start/stop/restart, live logs, resources,
-script discovery (**Discover**), read-only **preset** cards, and **rename / clone / trash**.
+script discovery (**Discover**), an inline **editor** for the start script, **lock**, and
+**rename / clone / trash**. The deck binds every interface, so the same dashboard opens
+from a phone on the LAN or over Tailscale — the startup banner prints the addresses.
 
 Point a client at the same port:
 
@@ -214,10 +216,16 @@ this is live — no restart, and the config file is rewritten atomically (a `.ba
 - **clone** (克隆): copies an entry (same script/port/flags) under a new id.
 - **trash** (删除): removes the entry from the config and writes it to
   `<state_dir>/trash/<timestamp>-<id>.yaml` before dropping it.
-- **preset** (预设): read-only card showing the script's binary, model, port/host, placement
-  and notable flags, parsed from the script itself.
+- **edit** (编辑): change the start script, port, args, env, ready path and idle TTL right
+  in the browser and save it back to the config. The script's own `--port` is picked up
+  automatically; a script path that does not exist is refused. Save-and-start tries it
+  immediately — no YAML editing, no restart.
+- **lock** (🔒 锁定): a locked entry is never unloaded by the idle reaper and never evicted
+  to make room for another model. Useful while testing a model you do not want to pay the
+  cold-start latency for. The flag is stored in the config and survives restarts.
 
-The script is never rewritten: a rename changes only deck's labels, not the script file.
+The script file is never rewritten: these actions change deck's own config, not the
+launcher on disk.
 
 ## Discovery
 
@@ -247,17 +255,20 @@ POST   /api/entries                        # create; or {"clone_of": id, "id": n
 POST   /api/entries/{id}/rename            # {"id": new_id, "name": new_name}
 DELETE /api/entries/{id}                   # move to state_dir/trash
 GET    /api/scan?dir=A&dir=B               # discover scripts + draft entries
-GET    /api/entries/{id}/preset            # read-only parsed preset
+GET    /api/entries/{id}/config            # editable config + parsed script info
+POST   /api/entries/{id}/config            # edit script/port/args/env/ttl/ready_path
 POST   /api/entries/{id}/start|stop|restart [?async=1]
-POST   /api/entries/{id}/pin               {"pinned": true}
+POST   /api/entries/{id}/lock              {"locked": true}   # never idle-unload / evict
+POST   /api/entries/{id}/reset             # clear a stale "failed" state
 POST   /api/entries/{id}/ttl               {"ttl": 900}
 GET    /api/entries/{id}/logs?tail=200
 GET    /api/entries/{id}/logs/stream       # SSE
 ```
 
 `/api/status` also returns a `host` block — hostname, optional `server.label`, deck
-version, uptime, and live GPU/CPU/RAM figures. The WebUI uses it for the Dashboard panel
-and to label the tab with the machine it talks to.
+version, uptime, live GPU/CPU/RAM figures, and `host.urls`: the addresses other machines
+can open (with a wildcard bind: every local address, LAN and Tailscale alike). The WebUI
+uses it for the Dashboard panel and to label the tab with the machine it talks to.
 
 If `server.token` is set, `/api`, `/v1`, and `/run` require
 `Authorization: Bearer <token>` (or `?token=`); `/health` and the WebUI stay open.
@@ -269,7 +280,7 @@ cookie, so the dashboard keeps working without any client-side change.
 See `examples/entries.example.yaml`. Key fields:
 
 ```yaml
-server:  { listen: 127.0.0.1:12688, token: "", label: "", state_dir: ~/.local/state/modeldeck }
+server:  { listen: 0.0.0.0:12688, token: "", label: "", state_dir: ~/.local/state/modeldeck }
 budgets: { vram_reserve_mb, ram_reserve_mb, max_starting, on_no_fit: queue|reject,
            queue_timeout, ttl_default, serialize_unknown_gpu: true }
 entries:

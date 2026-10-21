@@ -228,6 +228,50 @@ kill "$MULTIDECK" 2>/dev/null
 wait "$MULTIDECK" 2>/dev/null
 sleep 0.3
 
+# 22. entry config: read it back
+cfgjson=$(curl -s "$BASE/api/entries/alpha/config")
+[ "$(jget "$cfgjson" "d['script']")" = "/home/roychong/mycode/modeldeck/testdata/fake_server.py" ]
+ck "GET /api/entries/<id>/config returns the script" $?
+[ "$(jget "$cfgjson" "d['port']")" = "21001" ]; ck "entry config returns the port" $?
+
+# 23. entry config: edit it (the WebUI editor path)
+ed=$(curl -s -X POST "$BASE/api/entries/alpha/config" -H 'Content-Type: application/json' \
+  -d '{"name":"Alpha edited","port":21001}')
+[ "$(jget "$ed" "d['name']")" = "Alpha edited" ]; ck "POST entry config edits the name" $?
+grep -q "Alpha edited" "$CONFIG"; ck "entry config edit is persisted in the YAML" $?
+
+# 24. entry config: a script that does not exist is refused
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/entries/alpha/config" \
+  -H 'Content-Type: application/json' -d '{"script":"/nope/missing.sh"}')
+[ "$code" = "400" ]; ck "entry config refuses a missing script" $?
+
+# 25. lock (was "pin"): keeps the model alive and is persisted
+lk=$(curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
+  -d '{"locked":true}')
+[ "$(jget "$lk" "d['locked']")" = "True" ]; ck "POST /lock locks the entry" $?
+grep -q "pinned: true" "$CONFIG"; ck "lock is persisted in the YAML" $?
+lk=$(curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
+  -d '{"locked":false}')
+[ "$(jget "$lk" "d['locked']")" = "False" ]; ck "POST /lock unlocks the entry" $?
+
+# 26. reset clears a failed state
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/entries/alpha/reset")
+[ "$code" = "200" ]; ck "POST /reset clears the failed state" $?
+
+# 27. status carries the reachable addresses (LAN + Tailscale)
+urls=$(curl -s "$BASE/api/status" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(len(d.get('host',{}).get('urls',[])))
+")
+[ "$urls" -ge 1 ]; ck "status reports the reachable addresses" $?
+
+# 28. the WebUI ships the new editor / lock / clear controls
+html=$(curl -s "$BASE/static/app.js")
+echo "$html" | grep -q "edsave_run"; ck "WebUI ships the entry editor" $?
+echo "$html" | grep -q "lockRow"; ck "WebUI ships the lock button" $?
+echo "$html" | grep -q "eventclear"; ck "WebUI ships the events clear button" $?
+
 echo
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]

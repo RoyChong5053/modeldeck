@@ -99,6 +99,20 @@ func (rt *Runtime) Pid() int {
 	return rt.pid
 }
 
+// Reset clears a failed state so a stale error does not stick to the entry
+// forever. The process is gone by then; only the bookkeeping is dropped.
+func (rt *Runtime) Reset() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.state != StateFailed {
+		return false
+	}
+	rt.state = StateStopped
+	rt.lastErr = ""
+	rt.readyErr = ""
+	return true
+}
+
 func (rt *Runtime) Pgid() int {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()

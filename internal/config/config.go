@@ -209,7 +209,9 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) Normalize() {
 	if c.Server.Listen == "" {
-		c.Server.Listen = "127.0.0.1:12688"
+		// Every interface by default: a fixed IP breaks the moment the DHCP
+		// lease changes or a Tailscale address shows up.
+		c.Server.Listen = "0.0.0.0:12688"
 	}
 	if c.Server.StateDir == "" {
 		home, _ := os.UserHomeDir()
@@ -320,6 +322,9 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// ExpandHome expands a leading "~" to the user's home directory.
+func ExpandHome(p string) string { return expandHome(p) }
 
 func expandHome(p string) string {
 	if p == "" {

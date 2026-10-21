@@ -123,18 +123,18 @@ function makeRow() {
   refs.start = button("启动", "primary", () => actRow(refs.id, "start"));
   refs.stop = button("停止", "", () => actRow(refs.id, "stop"));
   refs.restart = button("重启", "", () => actRow(refs.id, "restart"));
-  refs.pin = button("📌 固定", "", () => pinRow(refs.id, !refs.pinned));
-  refs.preset = button("预设", "ghost", () => presetRow(refs.id));
+  refs.lock = button("🔒 锁定", "", () => lockRow(refs.id, !refs.locked));
+  refs.edit = button("编辑", "ghost", () => editRow(refs.id));
   refs.logs = button("日志", "ghost", () => openLog(refs.id));
   refs.rename = button("改名", "ghost", () => renameRow(refs.id, refs.title));
   refs.clone = button("克隆", "ghost", () => cloneRow(refs.id));
   refs.del = button("删除", "danger", () => deleteRow(refs.id));
-  box.append(refs.start, refs.stop, refs.restart, refs.pin,
-    refs.preset, refs.logs, refs.rename, refs.clone, refs.del);
+  box.append(refs.start, refs.stop, refs.restart, refs.lock,
+    refs.edit, refs.logs, refs.rename, refs.clone, refs.del);
   act.appendChild(box);
 
   tr.append(refs.name, refs.state, refs.port, refs.inflight, refs.rss, refs.vram, refs.idle, act);
-  return { id: "", tr, refs, pinned: false };
+  return { id: "", tr, refs, locked: false };
 }
 
 function updateRow(row, e) {
@@ -142,10 +142,10 @@ function updateRow(row, e) {
   row.id = e.id;
   r.id = e.id;
   r.title = e.name || e.id;
-  row.pinned = !!e.pinned;
-  r.pinned = !!e.pinned;
+  row.locked = !!e.pinned;
 
   r.name.innerHTML = `<strong>${e.name || e.id}</strong>` +
+    (e.pinned ? ' <span class="lockbadge" title="已锁定：不会被自动卸载，也不会被其它模型挤掉">🔒</span>' : "") +
     `<div class="muted" style="font-size:12px">${e.id}` +
     ((e.aliases && e.aliases.length) ? " · " + e.aliases.join(", ") : "") + `</div>`;
 
@@ -162,7 +162,10 @@ function updateRow(row, e) {
   r.start.disabled = running;
   r.stop.disabled = !running;
   r.restart.disabled = !running;
-  r.pin.textContent = e.pinned ? "📌 已固定" : "📌 固定";
+  r.lock.textContent = e.pinned ? "🔓 已锁定" : "🔒 锁定";
+  r.lock.title = e.pinned
+    ? "已锁定：空闲也不会被自动卸载，也不会被其它模型挤掉（点一下解锁）"
+    : "锁定：空闲也不会被自动卸载，也不会被其它模型挤掉";
 }
 
 function renderEntries(entries) {
@@ -211,7 +214,8 @@ function renderOps(entries) {
     } else if (e.state === "stopping") {
       ops.push(`<span class="op stopping"><span class="spin">◠</span><span class="who">${e.id}</span>停止中</span>`);
     } else if (e.state === "failed") {
-      ops.push(`<span class="op failed"><span class="who">${e.id}</span>启动失败</span>`);
+      ops.push(`<span class="op failed"><span class="who">${e.id}</span>启动失败` +
+        `<button class="opx" data-reset="${e.id}" title="清除失败状态">✕</button></span>`);
     } else if (e.state === "ready" && e.inflight > 0) {
       ops.push(`<span class="op serving"><span class="who">${e.id}</span>${e.inflight} 个请求在飞</span>`);
     }
@@ -259,7 +263,14 @@ function renderDashboard(host, budgets, entries) {
   const gpuHeat = g.ok ? (g.used_mb > g.total_mb * 0.9 ? "hot" : (g.used_mb > g.total_mb * 0.75 ? "warm" : "")) : "";
   const memHeat = m.total_mb ? (m.available_mb / m.total_mb < 0.1 ? "hot" : "") : "";
 
-  // phone strip: one scrollable row instead of a tall grid
+  // The addresses other machines can open. With a wildcard bind this is every
+  // local address — LAN plus Tailscale — so a phone can be handed a link that
+  // works, and a DHCP change does not invalidate it.
+  const allUrls = h.urls || [];
+  const lanUrls = allUrls.filter((u) => !/127\.0\.0\.1|localhost|\[::1\]/.test(u));
+  const urls = lanUrls.length ? lanUrls : allUrls;
+
+  // phone strip: one row of chips that wraps instead of scrolling sideways
   const strip = [
     `<span class="s"><b>主机</b>${short(name, 16)}${showLabel ? " · " + short(h.label, 12) : ""}</span>`,
     g.ok ? `<span class="s ${gpuHeat}"><b>GPU</b>${fmtMB(g.used_mb)}/${fmtMB(g.total_mb)} · ${g.util_pct || 0}%</span>` : "",
@@ -268,6 +279,7 @@ function renderDashboard(host, budgets, entries) {
     `<span class="s"><b>模型</b>${online} 在线</span>`,
     `<span class="s"><b>预留</b>${fmtMB(b.vram_reserve_mb)} VRAM</span>`,
     `<span class="s"><b>策略</b>${b.on_no_fit === "reject" ? "拒绝" : "排队"} · ${b.queue_timeout ?? "—"}s</span>`,
+    urls.length ? `<span class="s"><b>地址</b>${short(urls[0].replace(/^https?:\/\//, ""), 30)}</span>` : "",
   ].filter(Boolean).join("");
   $("dashstrip").innerHTML = strip;
 
@@ -308,6 +320,17 @@ function renderDashboard(host, budgets, entries) {
     sub: `排队超时 ${b.queue_timeout ?? "—"}s`,
   }));
 
+  // The addresses other machines can open, with the token so a tap on a
+  // phone lands straight on a working dashboard.
+  const linkHTML = urls.length
+    ? urls.map((u) => {
+        const t = getToken();
+        const href = u + (t ? (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t) : "");
+        return `<a href="${href}" target="_blank" rel="noreferrer">${u.replace(/^https?:\/\//, "")}</a>`;
+      }).join("")
+    : `<span class="muted">只有回环地址，别处的设备打不开</span>`;
+  cards.push(`<div class="kv wide"><div class="k">地址</div><div class="urls">${linkHTML}</div></div>`);
+
   $("dash").innerHTML = cards.join("");
   $("dashinfo").textContent = `${h.listen || ""}`;
 }
@@ -321,10 +344,20 @@ async function actRow(id, action) {
   setTimeout(refresh, 300);
 }
 
-async function pinRow(id, pinned) {
-  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/pin`, { pinned });
-  if (!ok) log(`pin ${id} 失败: ${(data.error && data.error.message) || ""}`);
-  else log(`pin ${id} = ${pinned}`);
+// lockRow locks an entry in place: it is never unloaded by the idle reaper
+// and never evicted to make room for another model.
+async function lockRow(id, locked) {
+  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/lock`, { locked });
+  if (!ok) log(`锁定 ${id} 失败: ${(data.error && data.error.message) || ""}`);
+  else log(locked ? `已锁定 ${id}（不会被自动卸载）` : `已解锁 ${id}`);
+  setTimeout(refresh, 200);
+}
+
+// resetRow clears a failed state so the error stops sticking to the entry.
+async function resetRow(id) {
+  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/reset`);
+  if (!ok) log(`清除 ${id} 失败状态失败: ${(data.error && data.error.message) || ""}`);
+  else log(`已清除 ${id} 的失败状态`);
   setTimeout(refresh, 200);
 }
 
@@ -367,26 +400,75 @@ async function deleteRow(id) {
   refresh();
 }
 
-async function presetRow(id) {
-  const { ok, data } = await api("GET", `/api/entries/${encodeURIComponent(id)}/preset`);
-  if (!ok) { log(`读取预设失败: ${(data.error && data.error.message) || ""}`); return; }
-  const p = data.preset || {};
+// ---- edit an entry: the start script and the knobs around it --------------
+// Editing the script here and pressing 启动 on the same screen is the
+// shortest path from "I wrote a new launcher" to "it runs".
+let editID = null;
+
+async function editRow(id) {
+  const { ok, data } = await api("GET", `/api/entries/${encodeURIComponent(id)}/config`);
+  if (!ok) { log(`读取配置失败: ${(data.error && data.error.message) || ""}`); return; }
+  editID = id;
+  $("edittitle").textContent = "编辑 · " + id;
+  $("ed_script").value = data.script || "";
+  $("ed_name").value = data.name || "";
+  $("ed_port").value = data.port || "";
+  $("ed_ready_path").value = (data.ready && data.ready.path) || "/health";
+  $("ed_args").value = (data.args || []).join("\n");
+  $("ed_env").value = (data.env || []).join("\n");
+  $("ed_ttl").value = (data.ttl === undefined || data.ttl === null) ? "" : data.ttl;
+  $("ed_msg").textContent = "";
+  renderParsed(data.parsed);
+  $("editmodal").classList.remove("hidden");
+}
+
+function renderParsed(p) {
+  const el = $("ed_parsed");
+  if (!p) { el.textContent = "（脚本还没写好，解析不了）"; return; }
   const flags = (p.flags && p.flags.length) ? p.flags.join(", ") : "—";
   const lines = [
-    `entry      : ${data.id}`,
-    `script     : ${data.script}`,
     `binary     : ${p.binary || "?"}`,
     `model      : ${p.model || "—"}`,
     `listen     : ${p.host}:${p.port}  (ready: ${p.ready})`,
-    `placement  : ${p.placement}`,
+    `placement  : ${p.placement || "—"}`,
     `flags      : ${flags}`,
   ];
   for (const w of (p.warnings || [])) lines.push(`warning    : ${w}`);
-  $("presettitle").textContent = "预设 · " + data.id;
-  $("presetbody").textContent = lines.join("\n");
-  $("presetmodal").classList.remove("hidden");
+  el.textContent = lines.join("\n");
 }
-function closePreset() { $("presetmodal").classList.add("hidden"); }
+
+function closeEdit() { $("editmodal").classList.add("hidden"); }
+
+async function saveEdit(andRun) {
+  if (!editID) return;
+  const body = {};
+  const script = $("ed_script").value.trim();
+  if (script) body.script = script;
+  const name = $("ed_name").value.trim();
+  body.name = name;
+  const port = parseInt($("ed_port").value, 10);
+  if (port > 0) body.port = port;
+  const readyPath = $("ed_ready_path").value.trim();
+  if (readyPath) body.ready_path = readyPath;
+  const ttlRaw = $("ed_ttl").value.trim();
+  if (ttlRaw !== "") body.ttl = parseInt(ttlRaw, 10);
+  body.args = $("ed_args").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  body.env = $("ed_env").value.split("\n").map((s) => s.trim()).filter(Boolean);
+
+  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(editID)}/config`, body);
+  if (!ok) {
+    $("ed_msg").textContent = "保存失败: " + ((data.error && data.error.message) || data.raw || ("HTTP " + data.status));
+    return;
+  }
+  renderParsed(data.parsed);
+  log(`已保存 ${editID}`);
+  refresh();
+  if (andRun) {
+    const running = data.running;
+    closeEdit();
+    actRow(editID, running ? "restart" : "start");
+  }
+}
 
 // ---- discovery ----
 async function doScan() {
@@ -464,7 +546,28 @@ function closeLog() {
   $("logmodal").classList.add("hidden");
 }
 
+// copyLink hands the phone a link that opens the dashboard already
+// authenticated — the one address that is not the loopback.
+function copyLink() {
+  const urls = (lastHost.urls || []);
+  const lan = urls.filter((u) => !/127\.0\.0\.1|localhost|\[::1\]/.test(u));
+  const pick = (lan.length ? lan : urls)[0];
+  if (!pick) { log("没有可用的地址"); return; }
+  const t = getToken();
+  const link = pick + (t ? (pick.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t) : "");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(
+      () => log("已复制: " + link),
+      () => log("复制失败，地址是: " + link)
+    );
+  } else {
+    log("地址: " + link);
+  }
+}
+
 // ---- shell ----
+let lastHost = {};
+
 function syncHeaderHeight() {
   const h = $("topbar").offsetHeight;
   if (h) document.documentElement.style.setProperty("--hdr", h + "px");
@@ -504,6 +607,7 @@ async function refresh() {
   $("summary").textContent = s;
   $("listen").textContent = "listen " + (data.listen || "");
   const entries = data.entries || [];
+  lastHost = data.host || {};
   renderEntries(entries);
   renderOps(entries);
   renderDashboard(data.host, data.budgets, entries);
@@ -537,14 +641,25 @@ $("tokenbtn").onclick = promptToken;
 $("tokenok").onclick = applyToken;
 $("tokeninput").addEventListener("keydown", (e) => { if (e.key === "Enter") applyToken(); });
 $("logclose").onclick = closeLog;
+$("logclear").onclick = () => { $("logbody").textContent = ""; };
 $("logmodal").onclick = (e) => { if (e.target.id === "logmodal") closeLog(); };
-$("presetclose").onclick = closePreset;
-$("presetmodal").onclick = (e) => { if (e.target.id === "presetmodal") closePreset(); };
+$("eventclear").onclick = (e) => { e.preventDefault(); e.stopPropagation(); $("events").textContent = ""; };
+$("copylink").onclick = (e) => { e.preventDefault(); e.stopPropagation(); copyLink(); };
+$("editclose").onclick = closeEdit;
+$("editmodal").onclick = (e) => { if (e.target.id === "editmodal") closeEdit(); };
+$("edsave").onclick = () => saveEdit(false);
+$("edsave_run").onclick = () => saveEdit(true);
 $("scanbtn").onclick = doScan;
 $("fold").onclick = () => applyFold(!$("stack").classList.contains("folded"));
+// the failed chip carries a ✕ that clears the stale error
+$("ops").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-reset]");
+  if (!b) return;
+  resetRow(b.dataset.reset);
+});
 window.addEventListener("resize", syncHeaderHeight);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeLog(); closePreset(); }
+  if (e.key === "Escape") { closeLog(); closeEdit(); }
 });
 
 let folded = false;

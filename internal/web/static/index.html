@@ -32,7 +32,7 @@
           <input id="tokeninput" type="password" placeholder="deck-…" autocomplete="off" spellcheck="false">
           <button id="tokenok" class="primary">连接</button>
         </div>
-        <p class="muted tiny">令牌在设备上：<code>grep token ~/.config/modeldeck/entries.yaml</code>
+        <p class="muted tiny">令牌在设备上：<code>grep DECK_TOKEN ~/modeldeck/.env</code>
           （或 <code>journalctl --user -u modeldeck | grep WebUI</code>）。
           首次也可以直接打开 <code>http://&lt;地址&gt;:12688/?token=…</code>。</p>
       </div>
@@ -43,6 +43,7 @@
         <summary class="panel-head">
           <h2>Events</h2>
           <span id="opsinfo" class="muted"></span>
+          <button id="eventclear" class="ghost tinybtn" title="清空下方记录">清空</button>
         </summary>
         <div id="ops" class="ops"></div>
         <pre id="events" class="events"></pre>
@@ -52,6 +53,7 @@
         <summary class="panel-head">
           <h2>Dashboard</h2>
           <span id="dashinfo" class="muted"></span>
+          <button id="copylink" class="ghost tinybtn" title="复制一个手机能打开的链接">复制链接</button>
         </summary>
         <div id="dashstrip" class="strip"></div>
         <div id="dash" class="grid"></div>
@@ -90,19 +92,56 @@
     <div class="modal-box">
       <div class="modal-head">
         <h3 id="logtitle">logs</h3>
-        <button id="logclose" class="ghost">关闭</button>
+        <div class="modal-head-actions">
+          <button id="logclear" class="ghost">清屏</button>
+          <button id="logclose" class="ghost">关闭</button>
+        </div>
       </div>
       <pre id="logbody"></pre>
     </div>
   </div>
 
-  <div id="presetmodal" class="modal hidden">
+  <div id="editmodal" class="modal hidden">
     <div class="modal-box">
       <div class="modal-head">
-        <h3 id="presettitle">preset</h3>
-        <button id="presetclose" class="ghost">关闭</button>
+        <h3 id="edittitle">编辑</h3>
+        <button id="editclose" class="ghost">关闭</button>
       </div>
-      <pre id="presetbody"></pre>
+      <div class="editbody">
+        <label class="fld">启动脚本
+          <input id="ed_script" type="text" placeholder="/home/you/LLM/model.sh" spellcheck="false" autocapitalize="off">
+        </label>
+        <div class="editrow">
+          <label class="fld">显示名
+            <input id="ed_name" type="text" placeholder="（可留空）">
+          </label>
+          <label class="fld">端口
+            <input id="ed_port" type="number" min="1" max="65535" inputmode="numeric">
+          </label>
+          <label class="fld">就绪路径
+            <input id="ed_ready_path" type="text" placeholder="/health" spellcheck="false">
+          </label>
+        </div>
+        <label class="fld">参数（每行一个）
+          <textarea id="ed_args" rows="3" spellcheck="false" autocapitalize="off"></textarea>
+        </label>
+        <label class="fld">环境变量（每行一个 KEY=VALUE）
+          <textarea id="ed_env" rows="2" spellcheck="false" autocapitalize="off"></textarea>
+        </label>
+        <label class="fld">空闲回收 TTL（秒，-1 = 用默认，0 = 永不回收）
+          <input id="ed_ttl" type="number" min="-1" inputmode="numeric" placeholder="默认">
+        </label>
+        <details class="parsedbox">
+          <summary>脚本解析结果</summary>
+          <pre id="ed_parsed" class="parsed"></pre>
+        </details>
+        <div id="ed_msg" class="editmsg"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="muted tiny">保存后点「重启」生效</span>
+        <button id="edsave" class="primary">保存</button>
+        <button id="edsave_run">保存并启动</button>
+      </div>
     </div>
   </div>
 

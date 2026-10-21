@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -152,6 +153,12 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
 			s.logTail(w, r, id)
 		case "pin":
 			s.pin(w, r, id)
+		case "lock":
+			s.pin(w, r, id)
+		case "reset":
+			s.reset(w, r, id)
+		case "config":
+			s.entryConfig(w, r, id)
 		case "ttl":
 			s.setTTL(w, r, id)
 		case "preset":
@@ -224,6 +231,10 @@ func (s *Server) hostPayload() map[string]any {
 			"available_mb": mem.AvailableMB,
 			"used_mb":      mem.UsedMB,
 		},
+		// The addresses other machines can open: with a wildcard bind this is
+		// every local address (LAN + Tailscale), so a phone can be handed a
+		// link that works.
+		"urls": runtime.ListenURLs(s.cfg.Server.Listen, ""),
 	}
 }
 
@@ -293,6 +304,12 @@ func (s *Server) actionTimeout(e *config.Entry) time.Duration {
 	return t + 30*time.Second
 }
 
+// pin locks an entry in place: a locked entry is never unloaded by the idle
+// reaper and never evicted to make room for another model. That is what you
+// want while a model is under test (ASR+TTS, a long generation) and the
+// warm-up cost would show up as latency on every request.
+//
+// The flag is persisted, so it survives a deck restart.
 func (s *Server) pin(w http.ResponseWriter, r *http.Request, id string) {
 	e, ok := s.reg.ByID(id)
 	if !ok {
@@ -305,14 +322,240 @@ func (s *Server) pin(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	var body struct {
 		Pinned *bool `json:"pinned"`
+		Locked *bool `json:"locked"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.Pinned != nil {
-		e.Pinned = *body.Pinned
-	} else {
-		e.Pinned = !e.Pinned
+	want := !e.Pinned
+	switch {
+	case body.Pinned != nil:
+		want = *body.Pinned
+	case body.Locked != nil:
+		want = *body.Locked
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "pinned": e.Pinned})
+	if err := s.commitEntries(func(list []*config.Entry) ([]*config.Entry, error) {
+		for _, x := range list {
+			if x.ID == id {
+				x.Pinned = want
+			}
+		}
+		return list, nil
+	}); err != nil {
+		writeAPIErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "pinned": want, "locked": want})
+}
+
+// reset clears a failed state so a stale error does not stick to the entry
+// forever. Nothing is restarted; the entry simply goes back to "stopped".
+func (s *Server) reset(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeAPIErr(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	rt := s.sup.Get(id)
+	if rt == nil {
+		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
+		return
+	}
+	cleared := rt.Reset()
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "cleared": cleared})
+}
+
+// entryConfigReq is the editable subset of an entry. Every field is a
+// pointer, so "not sent" and "set to the zero value" stay distinguishable.
+type entryConfigReq struct {
+	Name          *string   `json:"name"`
+	Script        *string   `json:"script"`
+	Args          *[]string `json:"args"`
+	Env           *[]string `json:"env"`
+	Cwd           *string   `json:"cwd"`
+	Mode          *string   `json:"mode"`
+	Host          *string   `json:"host"`
+	Port          *int      `json:"port"`
+	TTL           *int      `json:"ttl"`
+	Placement     *string   `json:"placement"`
+	Tags          *[]string `json:"tags"`
+	UpstreamModel *string   `json:"upstream_model"`
+	ReadyPath     *string   `json:"ready_path"`
+	ReadyTimeout  *int      `json:"ready_timeout"`
+}
+
+type entryConfigResp struct {
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Script        string           `json:"script"`
+	Args          []string         `json:"args"`
+	Env           []string         `json:"env"`
+	Cwd           string           `json:"cwd"`
+	Mode          string           `json:"mode"`
+	Host          string           `json:"host"`
+	Port          int              `json:"port"`
+	TTL           *int             `json:"ttl"`
+	Placement     string           `json:"placement"`
+	Tags          []string         `json:"tags"`
+	UpstreamModel string           `json:"upstream_model"`
+	Ready         config.Ready     `json:"ready"`
+	Resources     config.Resources `json:"resources"`
+	Pinned        bool             `json:"pinned"`
+	Running       bool             `json:"running"`
+	Parsed        *scan.Candidate  `json:"parsed,omitempty"`
+}
+
+// entryConfigPayload is the JSON view of an entry used by the WebUI editor.
+func (s *Server) entryConfigPayload(e *config.Entry) entryConfigResp {
+	out := entryConfigResp{
+		ID:            e.ID,
+		Name:          e.Name,
+		Script:        e.Script,
+		Args:          e.Args,
+		Env:           e.Env,
+		Cwd:           e.Cwd,
+		Mode:          e.Mode,
+		Host:          e.HostOr(),
+		Port:          e.Port,
+		TTL:           e.TTL,
+		Placement:     e.Placement,
+		Tags:          e.Tags,
+		UpstreamModel: e.UpstreamModel,
+		Ready:         e.Ready,
+		Resources:     e.Resources,
+		Pinned:        e.Pinned,
+	}
+	if rt := s.sup.Get(e.ID); rt != nil {
+		st := rt.State()
+		out.Running = st == runtime.StateReady || st == runtime.StateStarting
+	}
+	if c, err := scan.ParseScript(e.Script); err == nil {
+		out.Parsed = c
+	}
+	return out
+}
+
+// entryConfig reads (GET) or edits (POST) the fields of one entry. Editing
+// the start script here and pressing 启动 in the same screen is the fastest
+// way to try a new model without touching a YAML file.
+func (s *Server) entryConfig(w http.ResponseWriter, r *http.Request, id string) {
+	e, ok := s.reg.ByID(id)
+	if !ok {
+		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
+		return
+	}
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, s.entryConfigPayload(e))
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		writeAPIErr(w, http.StatusMethodNotAllowed, "GET or POST required")
+		return
+	}
+
+	var req entryConfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// Validate before touching the config: a typo in the script path must not
+	// leave the entry half-edited.
+	newScript := e.Script
+	if req.Script != nil {
+		newScript = config.ExpandHome(strings.TrimSpace(*req.Script))
+		if newScript == "" {
+			writeAPIErr(w, http.StatusBadRequest, "script must not be empty")
+			return
+		}
+		if _, err := os.Stat(newScript); err != nil {
+			writeAPIErr(w, http.StatusBadRequest, "script not found: "+newScript)
+			return
+		}
+	}
+	if req.Port != nil && (*req.Port < 1 || *req.Port > 65535) {
+		writeAPIErr(w, http.StatusBadRequest, "port must be 1..65535")
+		return
+	}
+	if req.TTL != nil && *req.TTL < -1 {
+		writeAPIErr(w, http.StatusBadRequest, "ttl must be >= 0 (-1 = use the default)")
+		return
+	}
+
+	// A new script usually carries its own --port; follow it so the editor
+	// does not have to be told twice.
+	var parsed *scan.Candidate
+	if newScript != e.Script {
+		if c, err := scan.ParseScript(newScript); err == nil {
+			parsed = c
+		}
+	}
+
+	err := s.commitEntries(func(list []*config.Entry) ([]*config.Entry, error) {
+		for i, x := range list {
+			if x.ID != id {
+				continue
+			}
+			ne := x.Clone()
+			if req.Name != nil {
+				ne.Name = *req.Name
+			}
+			if req.Script != nil {
+				ne.Script = newScript
+			}
+			if req.Args != nil {
+				ne.Args = *req.Args
+			}
+			if req.Env != nil {
+				ne.Env = *req.Env
+			}
+			if req.Cwd != nil {
+				ne.Cwd = config.ExpandHome(*req.Cwd)
+			}
+			if req.Mode != nil {
+				ne.Mode = *req.Mode
+			}
+			if req.Host != nil {
+				ne.Host = *req.Host
+			}
+			if req.Port != nil {
+				ne.Port = *req.Port
+			}
+			if req.TTL != nil {
+				if *req.TTL < 0 {
+					ne.TTL = nil // back to the deck-wide default
+				} else {
+					v := *req.TTL
+					ne.TTL = &v
+				}
+			}
+			if req.Placement != nil {
+				ne.Placement = *req.Placement
+			}
+			if req.Tags != nil {
+				ne.Tags = *req.Tags
+			}
+			if req.UpstreamModel != nil {
+				ne.UpstreamModel = *req.UpstreamModel
+			}
+			if req.ReadyPath != nil {
+				ne.Ready.Path = *req.ReadyPath
+			}
+			if req.ReadyTimeout != nil {
+				ne.Ready.Timeout = *req.ReadyTimeout
+			}
+			if req.Port == nil && parsed != nil && parsed.Port > 0 {
+				ne.Port = parsed.Port
+			}
+			next := append([]*config.Entry(nil), list...)
+			next[i] = ne
+			return next, nil
+		}
+		return nil, fmt.Errorf("unknown entry %q", id)
+	})
+	if err != nil {
+		writeAPIErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, _ := s.reg.ByID(id)
+	writeJSON(w, http.StatusOK, s.entryConfigPayload(updated))
 }
 
 func (s *Server) setTTL(w http.ResponseWriter, r *http.Request, id string) {
