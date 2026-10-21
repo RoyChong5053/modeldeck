@@ -2,13 +2,44 @@
 
 const $ = (id) => document.getElementById(id);
 
+// ---- access token ---------------------------------------------------------
+// A deck with server.token set refuses /api calls without a token. The token
+// can arrive three ways: the ?token= query parameter, the deck_session cookie
+// the server hands out, or the Authorization header below. We keep it in
+// localStorage so the dashboard keeps working on the next visit.
+const TOKEN_KEY = "deck.token";
+
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+}
+function setToken(t) {
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch (e) { /* private mode */ }
+}
+// ?token=... on the page URL: remember it and clean the address bar
+(function adoptTokenFromURL() {
+  const t = new URLSearchParams(location.search).get("token");
+  if (!t) return;
+  setToken(t);
+  try { history.replaceState({}, "", location.pathname); } catch (e) { /* ignore */ }
+})();
+
 async function api(method, path, body) {
   const opt = { method, headers: {} };
+  const t = getToken();
+  if (t) opt.headers["Authorization"] = "Bearer " + t;
   if (body !== undefined) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
   }
-  const r = await fetch(path, opt);
+  let r;
+  try {
+    r = await fetch(path, opt);
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: { message: "无法连接 deck: " + e.message } } };
+  }
   const text = await r.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
@@ -147,6 +178,24 @@ function renderEntries(entries) {
   }
   for (const [id, row] of rows) {
     if (!seen.has(id)) { row.tr.remove(); rows.delete(id); }
+  }
+  if (!entries.length) {
+    let empty = tb.querySelector(".empty-row");
+    if (!empty) {
+      empty = document.createElement("tr");
+      empty.className = "empty-row";
+      const c = document.createElement("td");
+      c.colSpan = 8;
+      c.className = "muted";
+      c.style.textAlign = "center";
+      c.style.padding = "18px 12px";
+      c.textContent = "没有条目";
+      empty.appendChild(c);
+      tb.appendChild(empty);
+    }
+  } else {
+    const empty = tb.querySelector(".empty-row");
+    if (empty) empty.remove();
   }
 }
 
@@ -397,7 +446,12 @@ function openLog(id) {
   $("logtitle").textContent = "logs · " + id;
   $("logbody").textContent = "";
   $("logmodal").classList.remove("hidden");
-  logSource = new EventSource(`/api/entries/${encodeURIComponent(id)}/logs/stream`);
+  // EventSource cannot set headers, so the token rides in the query string
+  // (the server accepts it anywhere and hands back a session cookie).
+  let url = `/api/entries/${encodeURIComponent(id)}/logs/stream`;
+  const t = getToken();
+  if (t) url += "?token=" + encodeURIComponent(t);
+  logSource = new EventSource(url);
   logSource.onmessage = (ev) => {
     const body = $("logbody");
     body.textContent += ev.data + "\n";
@@ -429,13 +483,20 @@ function applyFold(folded) {
 }
 
 async function refresh() {
-  const { ok, data } = await api("GET", "/api/status");
+  const { ok, status, data } = await api("GET", "/api/status");
   const dot = $("dot");
   if (!ok) {
     dot.className = "dot dead";
-    $("summary").textContent = "API 不可用";
+    if (status === 401) {
+      showAuthWall("需要访问令牌", "这台 deck 开启了令牌保护，/api 被拒绝。把令牌填进下面即可连接。");
+      $("summary").textContent = "需要令牌";
+    } else {
+      showAuthWall("无法连接 deck", (data.error && data.error.message) || ("HTTP " + status));
+      $("summary").textContent = "连接失败";
+    }
     return;
   }
+  hideAuthWall();
   dot.className = "dot live";
   const m = data.mem || {}, g = data.gpu || {};
   let s = `RAM ${fmtMB(m.available_mb)} 可用`;
@@ -448,7 +509,33 @@ async function refresh() {
   renderDashboard(data.host, data.budgets, entries);
 }
 
+// ---- auth wall ------------------------------------------------------------
+function showAuthWall(title, msg) {
+  $("authtitle").textContent = title;
+  $("authmsg").textContent = msg;
+  $("authwall").classList.remove("hidden");
+}
+function hideAuthWall() {
+  $("authwall").classList.add("hidden");
+}
+function applyToken() {
+  const t = $("tokeninput").value.trim();
+  if (!t) return;
+  setToken(t);
+  $("tokeninput").value = "";
+  log("已设置令牌，重新连接…");
+  refresh();
+}
+function promptToken() {
+  $("tokeninput").value = getToken();
+  $("authwall").classList.remove("hidden");
+  $("tokeninput").focus();
+}
+
 $("refresh").onclick = refresh;
+$("tokenbtn").onclick = promptToken;
+$("tokenok").onclick = applyToken;
+$("tokeninput").addEventListener("keydown", (e) => { if (e.key === "Enter") applyToken(); });
 $("logclose").onclick = closeLog;
 $("logmodal").onclick = (e) => { if (e.target.id === "logmodal") closeLog(); };
 $("presetclose").onclick = closePreset;

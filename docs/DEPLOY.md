@@ -40,16 +40,20 @@ grep -E '^\s*token:' ~/.config/modeldeck/entries.yaml
 | d3180 | `http://192.168.100.38:12688/`（未设 token） |
 | lgv35 / mate10 / gt20 | `http://<各自 IP>:12688/`（未设 token） |
 
-**token 怎么"绑定"？** 没有单独的绑定步骤：
+**token 怎么"绑定"？** 没有单独的绑定步骤，三条路任选其一：
 
-1. token 写在配置 `server.token`，**改完要重启 deck 才生效**；
-2. 浏览器打开 `http://<地址>:12688/?token=<token>` —— 服务端识别出 token 后，
-   下发一个 `HttpOnly` 的 session cookie（`deck_session`，7 天）；
-3. 之后直接开 `http://<地址>:12688/` 就能用，cookie 自动带上（面板右上角能看到主机名和色块）。
+1. **一次性 URL**：浏览器打开 `http://<地址>:12688/?token=<token>`
+   → 令牌存进浏览器 localStorage（地址栏里的 `?token=` 会被自动抹掉）+ 服务端下发
+   `HttpOnly` cookie → 之后直接开 `http://<地址>:12688/` 就能用；
+2. **界面里填**：顶栏点 🔑 或页面出现"需要访问令牌"面板时，把令牌粘进输入框点「连接」；
+3. **命令行/客户端**：`Authorization: Bearer <token>`。
 
 > 为什么要这一步：浏览器里的 `fetch` / `EventSource` 默认不带自定义头，
-> 所以 WebUI 无法自己加 `Authorization: Bearer`。用 cookie 兜底，
-> 前端一行代码都不用改。`/health` 和静态资源始终免鉴权。
+> 所以 WebUI 无法自己加 `Authorization: Bearer`。用 localStorage + 头 + cookie 三重兜底，
+> 前端一行都不用改。`/health` 和静态资源始终免鉴权。
+>
+> **症状对照**：能看到面板框架但内容全空 = `/api` 被 401 挡了 = 没带令牌。
+> 现在这种情况会直接显示"需要访问令牌"面板，不再是空白页。
 
 ### 2.2 API 客户端（one-api 等）
 
@@ -187,7 +191,8 @@ ssh lgv35 'cd ~/modeldeck && ./start-termux.sh status'
 | 现象 | 多半是 | 处理 |
 |---|---|---|
 | one-api 报连接失败 | deck 没绑对外地址 | `ss -tlnp \| grep 12688`；改 `listen` 加 `192.168.10.1` |
-| WebUI 打开是"API 不可用" | 设了 token 但没带 cookie | 用 `?token=` 打开一次；或清掉 `deck_session` cookie 重来 |
+| WebUI 有框架但内容空白 | `/api` 被 401 挡了，没带令牌 | 顶栏 🔑 填令牌，或开 `?token=…` 一次 |
+| WebUI 打开是"API 不可用" | 同上（旧版本前端） | 升级到 v0.2.0+ 后会显示"需要访问令牌"面板 |
 | WebUI 表格挤成一团 | 旧版本前端 | 确认设备已到 v0.2.0+（`deck version`） |
 | deck 起来就崩（手机） | 用了 linux/arm64 交叉编译 | 改用 `GOOS=android` 重新编译 |
 | 模型启动失败 "port in use" | 有手工起的同名后端占着端口 | `ss -tlnp \| grep <port>` 找到并停掉 |

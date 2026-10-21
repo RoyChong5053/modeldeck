@@ -74,6 +74,25 @@ details[open] > summary.panel-head::after { content: "▾"; }
 details:not([open]) > summary.panel-head::after { content: "▸"; }
 details:not([open]) > summary.panel-head { border-bottom: none; }
 
+/* ---------- auth wall ---------- */
+.authwall { margin-bottom: 4px; }
+.authwall.hidden { display: none; }
+.authbox {
+  background: var(--panel); border: 1px solid rgba(210,153,34,.45); border-radius: 10px;
+  padding: 14px 16px;
+}
+.authbox h3 { margin: 0 0 6px; font-size: 14px; color: var(--warn); }
+.authbox p { margin: 0 0 10px; }
+.authrow { display: flex; gap: 8px; margin-bottom: 8px; }
+.authrow input {
+  flex: 1; min-width: 0; background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.authrow input:focus { outline: none; border-color: var(--accent); }
+.tiny { font-size: 11px; }
+code { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+
 /* ---------- events ---------- */
 .ops { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
 .ops:empty { display: none; }

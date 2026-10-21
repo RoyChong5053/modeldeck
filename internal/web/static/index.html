@@ -17,12 +17,27 @@
     </div>
     <div id="summary" class="summary">connecting…</div>
     <div class="head-actions">
+      <button id="tokenbtn" class="ghost" title="访问令牌">🔑</button>
       <button id="fold" class="ghost" title="收起/展开面板">▾</button>
       <button id="refresh" class="ghost">刷新</button>
     </div>
   </header>
 
   <main>
+    <div id="authwall" class="authwall hidden">
+      <div class="authbox">
+        <h3 id="authtitle">需要访问令牌</h3>
+        <p id="authmsg" class="muted">这台 deck 开启了令牌保护。把令牌填进下面即可连接。</p>
+        <div class="authrow">
+          <input id="tokeninput" type="password" placeholder="deck-…" autocomplete="off" spellcheck="false">
+          <button id="tokenok" class="primary">连接</button>
+        </div>
+        <p class="muted tiny">令牌在设备上：<code>grep token ~/.config/modeldeck/entries.yaml</code>
+          （或 <code>journalctl --user -u modeldeck | grep WebUI</code>）。
+          首次也可以直接打开 <code>http://&lt;地址&gt;:12688/?token=…</code>。</p>
+      </div>
+    </div>
+
     <div class="stack" id="stack">
       <details class="panel" id="evpanel" open>
         <summary class="panel-head">
