@@ -26,26 +26,57 @@
 
 ## 2. 访问方式
 
-### 2.1 WebUI
+### 2.1 令牌放在哪：每台设备项目目录下的 `.env`
+
+**每台设备各有一份,就在 modeldeck 项目文件夹里**(不是 home):
+
+| 设备 | 令牌文件 |
+|---|---|
+| 主力机 | `~/mycode/modeldeck/.env` |
+| m64 / d3180 | `~/modeldeck/.env` |
+| lgv35 / mate10 / gt20 | `~/modeldeck/.env` |
+
+```
+# modeldeck access token — this device
+# 复制这个文件到新设备即可复用同一令牌；one-api 渠道的「密钥」填 DECK_TOKEN 的值。
+DECK_TOKEN=deck-515c6733b75278fd81a61a3467598ae3
+```
+
+- **换新设备**：把这个 `.env` 拷过去就行(或者 `scp m64:~/modeldeck/.env .`)。
+- systemd 设备：unit 里有 `EnvironmentFile=<项目>/.env` → 令牌自动进环境变量。
+- Termux 设备：`start-termux.sh` 从 `.env` 导出 `DECK_TOKEN`，**跑完就打印令牌**。
+
+```sh
+cat ~/modeldeck/.env                          # 查
+./start-termux.sh token                       # Termux：查（含 one-api 渠道配置）
+cd ~/mycode/modeldeck && ./deck token          # 任意平台：查
+cd ~/mycode/modeldeck && ./deck token --write  # 补建 .env（没有就生成一个）
+```
+
+> `.env` 已在 `.gitignore` 里，仓库只留 `.env.example`。
+> 服务端只认「YAML 里的 token → `$DECK_TOKEN`」，**不会自己去翻 `.env`**：
+> 否则同机跑第二个 deck 实例会被莫名其妙要求鉴权（踩过：冒烟 40 项全挂）。
+> `.env` → 环境变量这一步由部署层做（systemd EnvironmentFile / 脚本 export）。
+
+### 2.2 WebUI 怎么进
 
 ```sh
 # 取本机 token
-grep -E '^\s*token:' ~/.config/modeldeck/entries.yaml
+grep -oP 'DECK_TOKEN=\K\S+' ~/modeldeck/.env
 ```
 
 | 设备 | WebUI |
 |---|---|
 | 主力机 | `http://127.0.0.1:12688/?token=<token>` 或 `http://192.168.10.1:12688/?token=<token>` |
-| m64 | `http://192.168.10.2:12688/`（未设 token） |
-| d3180 | `http://192.168.100.38:12688/`（未设 token） |
-| lgv35 / mate10 / gt20 | `http://<各自 IP>:12688/`（未设 token） |
+| m64 | `http://192.168.10.2:12688/?token=<token>` |
+| d3180 | `http://192.168.100.38:12688/?token=<token>` |
+| lgv35 / mate10 / gt20 | `http://<各自 IP>:12688/?token=<token>` |
 
-**token 怎么"绑定"？** 没有单独的绑定步骤，三条路任选其一：
+**token 的"绑定"三种走法，任选其一：**
 
-1. **一次性 URL**：浏览器打开 `http://<地址>:12688/?token=<token>`
-   → 令牌存进浏览器 localStorage（地址栏里的 `?token=` 会被自动抹掉）+ 服务端下发
-   `HttpOnly` cookie → 之后直接开 `http://<地址>:12688/` 就能用；
-2. **界面里填**：顶栏点 🔑 或页面出现"需要访问令牌"面板时，把令牌粘进输入框点「连接」；
+1. **一次性 URL**：打开 `?token=…` → 令牌存进 localStorage + 服务端下发 `HttpOnly` cookie
+   → 之后直接开 `http://<地址>:12688/` 就能用；
+2. **界面里填**：顶栏点 🔑，或页面出现"需要访问令牌"面板时，把令牌粘进输入框点「连接」；
 3. **命令行/客户端**：`Authorization: Bearer <token>`。
 
 > 为什么要这一步：浏览器里的 `fetch` / `EventSource` 默认不带自定义头，
@@ -167,7 +198,8 @@ systemctl --user restart modeldeck
 ```
 
 `install-systemd.sh` 会按**当前 checkout 路径**生成 `~/.config/systemd/user/modeldeck.service`
-（`WorkingDirectory`/`ExecStart` 指向当前目录），所以 `~/modeldeck` 和 `~/mycode/modeldeck` 都能用。
+（`WorkingDirectory`/`ExecStart` 指向当前目录），并加上
+`EnvironmentFile=<项目>/.env` —— 令牌由 `.env` 注入环境变量，YAML 里不用写 token。
 
 ### 4.2 Termux（lgv35 / mate10 / gt20）
 
@@ -181,8 +213,15 @@ cd ~/modeldeck && git pull --ff-only
 ./start-termux.sh logs     # 跟日志
 ```
 
-`start-termux.sh` 负责：自动 `termux-wake-lock`、改写配置里的 `listen`/`token`、
-后台启动、写 pidfile、就绪探测。
+`start-termux.sh` 负责：自动 `termux-wake-lock`、改写配置里的 `listen`、
+从 `./.env` 导出 `DECK_TOKEN`、后台启动、写 pidfile、就绪探测，
+**启动完成后直接打印令牌**：
+
+```
+→ up (pid 12345)
+→ token  : deck-6be41b9aee09471b373639886310548b
+→ env    : /data/data/com.termux/files/home/modeldeck/.env
+```
 
 ### 4.3 mate10 没有 Go：交叉编译
 
@@ -235,6 +274,8 @@ ssh lgv35 'cd ~/modeldeck && ./start-termux.sh status'
 | one-api 报连接失败 | deck 没绑对外地址 | `ss -tlnp \| grep 12688`；改 `listen` 加 `192.168.10.1` |
 | WebUI 有框架但内容空白 | `/api` 被 401 挡了，没带令牌 | 顶栏 🔑 填令牌，或开 `?token=…` 一次 |
 | WebUI 打开是"API 不可用" | 同上（旧版本前端） | 升级到 v0.2.0+ 后会显示"需要访问令牌"面板 |
+| 换了新设备后 401 | 新设备没有 `.env` | `deck token --write` 生成，再把 token 填进 one-api 渠道 |
+| 冒烟测试莫名全挂 | shell 里导出了 `DECK_TOKEN` | `unset DECK_TOKEN`（冒烟脚本已自带） |
 | WebUI 表格挤成一团 | 旧版本前端 | 确认设备已到 v0.2.0+（`deck version`） |
 | deck 起来就崩（手机） | 用了 linux/arm64 交叉编译 | 改用 `GOOS=android` 重新编译 |
 | 模型启动失败 "port in use" | 有手工起的同名后端占着端口 | `ss -tlnp \| grep <port>` 找到并停掉 |
