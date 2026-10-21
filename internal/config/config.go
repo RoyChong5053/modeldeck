@@ -20,8 +20,11 @@ type Config struct {
 }
 
 type Server struct {
-	Listen     string `yaml:"listen"`
-	Token      string `yaml:"token"`
+	Listen string `yaml:"listen"`
+	Token  string `yaml:"token"`
+	// Label is a human name for this machine ("主力机", "m64", ...). It shows
+	// up in the WebUI so several devices are told apart at a glance.
+	Label      string `yaml:"label"`
 	StateDir   string `yaml:"state_dir"`
 	ScriptsDir string `yaml:"scripts_dir"`
 }

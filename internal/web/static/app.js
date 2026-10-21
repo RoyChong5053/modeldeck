@@ -21,9 +21,19 @@ function fmtKB(kb) {
   return (kb / 1024).toFixed(0) + " MB";
 }
 function fmtMB(mb) {
-  if (!mb) return "—";
+  if (!mb || mb < 0) return "—";
   if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
   return mb + " MB";
+}
+// like fmtMB but 0 is a meaningful value (budgets, reserves)
+function fmtMB0(mb) {
+  if (mb === undefined || mb === null || mb < 0) return "—";
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + " GB";
+  return mb + " MB";
+}
+function fmtPct(part, total) {
+  if (!total) return "—";
+  return Math.max(0, Math.min(100, Math.round((part / total) * 100))) + "%";
 }
 function fmtIdle(iso) {
   if (!iso || iso.startsWith("0001")) return "—";
@@ -31,6 +41,17 @@ function fmtIdle(iso) {
   if (s < 60) return s + "s";
   if (s < 3600) return Math.floor(s / 60) + "m";
   return Math.floor(s / 3600) + "h";
+}
+function fmtUptime(s) {
+  if (!s || s < 0) return "—";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function short(s, n) {
+  s = (s || "").trim();
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 function log(msg) {
   const el = $("events");
@@ -42,7 +63,7 @@ const tail = (p) => (p || "").split("/").pop();
 // ---- keyed table rows (updated in place so clicks never hit stale nodes) ----
 const rows = new Map();
 
-function cell() { return document.createElement("td"); }
+function cell(label) { const d = document.createElement("td"); if (label) d.dataset.label = label; return d; }
 function td(v) { const d = document.createElement("td"); d.textContent = v; return d; }
 function button(label, cls, fn) {
   const b = document.createElement("button");
@@ -56,15 +77,16 @@ function makeRow() {
   const tr = document.createElement("tr");
   const refs = {};
 
-  refs.name = cell();
-  refs.state = cell();
-  refs.port = cell();
-  refs.inflight = cell();
-  refs.rss = cell();
-  refs.vram = cell();
-  refs.idle = cell();
+  refs.name = cell(); refs.name.dataset.name = "1";
+  refs.state = cell("状态");
+  refs.port = cell("端口");
+  refs.inflight = cell("在飞");
+  refs.rss = cell("RSS");
+  refs.vram = cell("VRAM");
+  refs.idle = cell("空闲");
 
-  const act = cell();
+  const act = cell("操作");
+  act.dataset.actions = "1";
   const box = document.createElement("div");
   box.className = "actions";
   refs.start = button("启动", "primary", () => actRow(refs.id, "start"));
@@ -128,35 +150,114 @@ function renderEntries(entries) {
   }
 }
 
-function renderBudgets(b) {
-  const items = [
-    ["VRAM 预留", fmtMB(b.vram_reserve_mb)],
-    ["RAM 预留", fmtMB(b.ram_reserve_mb)],
-    ["最大并发启动", b.max_starting],
-    ["预算不足策略", b.on_no_fit],
-    ["排队超时", (b.queue_timeout || 0) + "s"],
-    ["默认 TTL", (b.ttl_default || 0) + "s"],
-  ];
-  $("budgets").innerHTML = items.map(([k, v]) =>
-    `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+// ---- sticky top stack: what is happening right now ----
+function renderOps(entries) {
+  const el = $("ops");
+  const ops = [];
+  let online = 0, inflight = 0;
+  for (const e of entries) {
+    if (e.state === "ready") { online++; inflight += (e.inflight || 0); }
+    if (e.state === "starting") {
+      ops.push(`<span class="op starting"><span class="spin">◠</span><span class="who">${e.id}</span>启动中 ${fmtIdle(e.started_at)}</span>`);
+    } else if (e.state === "stopping") {
+      ops.push(`<span class="op stopping"><span class="spin">◠</span><span class="who">${e.id}</span>停止中</span>`);
+    } else if (e.state === "failed") {
+      ops.push(`<span class="op failed"><span class="who">${e.id}</span>启动失败</span>`);
+    } else if (e.state === "ready" && e.inflight > 0) {
+      ops.push(`<span class="op serving"><span class="who">${e.id}</span>${e.inflight} 个请求在飞</span>`);
+    }
+  }
+  el.innerHTML = ops.join("");
+  const parts = [`${online} 个模型在线`];
+  if (inflight) parts.push(`${inflight} 个请求在飞`);
+  if (ops.length) parts.push(`${ops.length} 项进行中`);
+  else parts.push("空闲");
+  $("opsinfo").textContent = parts.join(" · ");
 }
 
-async function refresh() {
-  const { ok, data } = await api("GET", "/api/status");
-  const dot = $("dot");
-  if (!ok) {
-    dot.className = "dot dead";
-    $("summary").textContent = "API 不可用";
-    return;
+// ---- dashboard: the hardware this deck runs on + the budgets in force ----
+function kv(k, v, opts = {}) {
+  const sub = opts.sub ? `<div class="sub">${opts.sub}</div>` : "";
+  const bar = opts.pct !== undefined
+    ? `<div class="bar ${opts.heat || ""}"><i style="width:${Math.max(0, Math.min(100, opts.pct))}%"></i></div>` : "";
+  const cls = opts.wide ? "kv wide" : "kv";
+  const vcls = opts.small ? "v small" : "v";
+  return `<div class="${cls}"><div class="k">${k}</div><div class="${vcls}"${opts.title ? ` title="${opts.title}"` : ""}>${v}</div>${sub}${bar}</div>`;
+}
+
+function renderDashboard(host, budgets, entries) {
+  const h = host || {};
+  const g = h.gpu || {};
+  const c = h.cpu || {};
+  const m = h.mem || {};
+  const b = budgets || {};
+
+  const name = (h.hostname || "?");
+  $("hostlabel").textContent = h.label ? `${name} · ${h.label}` : name;
+  document.title = (h.label ? `${name} · ${h.label}` : name) + " — ModelDeck";
+  // a stable colour per host so five deck tabs are told apart at a glance
+  let hue = 0;
+  for (const ch of name) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
+  $("hostlabel").style.borderColor = `hsl(${hue} 55% 45%)`;
+  $("hostlabel").style.color = `hsl(${hue} 70% 78%)`;
+
+  const online = (entries || []).filter((e) => e.state === "ready").length;
+  const cards = [];
+
+  const gpuHeat = g.ok ? (g.used_mb > g.total_mb * 0.9 ? "hot" : (g.used_mb > g.total_mb * 0.75 ? "warm" : "")) : "";
+  const memHeat = m.total_mb ? (m.available_mb / m.total_mb < 0.1 ? "hot" : "") : "";
+
+  // phone strip: one scrollable row instead of a tall grid
+  const strip = [
+    `<span class="s"><b>主机</b>${short(name, 16)}${h.label ? " · " + short(h.label, 12) : ""}</span>`,
+    g.ok ? `<span class="s ${gpuHeat}"><b>GPU</b>${fmtMB(g.used_mb)}/${fmtMB(g.total_mb)} · ${g.util_pct || 0}%</span>` : "",
+    `<span class="s"><b>CPU</b>${(c.load1 || 0).toFixed(2)} · ${c.cores || "?"}核</span>`,
+    `<span class="s ${memHeat}"><b>RAM</b>${fmtMB(m.used_mb)}/${fmtMB(m.total_mb)}</span>`,
+    `<span class="s"><b>模型</b>${online} 在线</span>`,
+    `<span class="s"><b>预留</b>${fmtMB(b.vram_reserve_mb)} VRAM</span>`,
+    `<span class="s"><b>策略</b>${b.on_no_fit === "reject" ? "拒绝" : "排队"} · ${b.queue_timeout ?? "—"}s</span>`,
+  ].filter(Boolean).join("");
+  $("dashstrip").innerHTML = strip;
+
+  cards.push(kv("主机", short(name, 18), {
+    sub: `${h.version ? "v" + h.version : ""} · 运行 ${fmtUptime(h.uptime_s)}`,
+    wide: false,
+  }));
+
+  if (g.ok) {
+    const gpuName = short((g.name || "GPU").replace(/^NVIDIA\s+/i, ""), 22);
+    cards.push(kv("GPU", gpuName, {
+      sub: `${fmtMB(g.used_mb)} / ${fmtMB(g.total_mb)} · ${g.util_pct || 0}% · ${g.temp_c || 0}°C`,
+      pct: g.total_mb ? (g.used_mb / g.total_mb) * 100 : 0,
+      heat: gpuHeat,
+      title: g.name || "",
+    }));
+  } else {
+    cards.push(kv("GPU", "无", { sub: "未检测到 nvidia-smi" }));
   }
-  dot.className = "dot live";
-  const m = data.mem || {}, g = data.gpu || {};
-  let s = `RAM 可用 ${fmtMB(m.available_mb)} / ${fmtMB(m.total_mb)}`;
-  if (g.ok) s += ` · GPU 空闲 ${fmtMB(g.free_mb)} / ${fmtMB(g.total_mb)}`;
-  $("summary").textContent = s;
-  $("listen").textContent = "listen " + (data.listen || "");
-  renderEntries(data.entries || []);
-  renderBudgets(data.budgets || {});
+
+  cards.push(kv("CPU", short(c.model || "?", 20), {
+    sub: `${c.cores || "?"} 核 · 负载 ${(c.load1 || 0).toFixed(2)}`,
+    title: c.model || "",
+  }));
+
+  cards.push(kv("内存", `${fmtMB(m.used_mb)} / ${fmtMB(m.total_mb)}`, {
+    sub: `可用 ${fmtMB(m.available_mb)}`,
+    pct: m.total_mb ? (m.used_mb / m.total_mb) * 100 : 0,
+    heat: m.total_mb ? (m.available_mb / m.total_mb < 0.1 ? "hot" : "") : "",
+  }));
+
+  cards.push(kv("运行中", `${online} 个模型`, {
+    sub: `并发启动上限 ${b.max_starting ?? "—"} · 默认 TTL ${b.ttl_default ?? "—"}s`,
+  }));
+
+  cards.push(kv("显存预留", fmtMB0(b.vram_reserve_mb), { sub: `RAM 预留 ${fmtMB0(b.ram_reserve_mb)}` }));
+  cards.push(kv("预算不足", b.on_no_fit === "reject" ? "立即拒绝" : "排队等待", {
+    sub: `排队超时 ${b.queue_timeout ?? "—"}s`,
+  }));
+
+  $("dash").innerHTML = cards.join("");
+  $("dashinfo").textContent = `${h.listen || ""}`;
 }
 
 // ---- entry actions ----
@@ -251,18 +352,18 @@ function renderScan(cands) {
   el.innerHTML = "";
   if (!cands.length) { el.innerHTML = '<div class="muted" style="padding:10px 14px">未发现脚本</div>'; return; }
   const tbl = document.createElement("table");
+  tbl.className = "responsive";
   tbl.innerHTML = "<thead><tr><th>ID</th><th>端口</th><th>位置</th><th>二进制</th><th>脚本</th><th>操作</th></tr></thead>";
   const tb = document.createElement("tbody");
   for (const c of cands) {
     const tr = document.createElement("tr");
-    tr.append(
-      td(c.id),
-      td(c.port || "—"),
-      td(c.placement),
-      td(tail(c.binary) || "?"),
-      td(tail(c.script)),
-    );
-    const act = cell();
+    const cells = [td(c.id), td(c.port || "—"), td(c.placement), td(tail(c.binary) || "?"), td(tail(c.script))];
+    const labels = ["ID", "端口", "位置", "二进制", "脚本"];
+    cells.forEach((c2, i) => { c2.dataset.label = labels[i]; });
+    cells[0].dataset.name = "1";
+    tr.append(...cells);
+    const act = cell("操作");
+    act.dataset.actions = "1";
     const b = button(c.configured ? "已导入" : "导入", c.configured ? "" : "primary", () => importCandidate(c));
     b.disabled = !!c.configured || !c.port;
     act.appendChild(b);
@@ -306,15 +407,59 @@ function closeLog() {
   $("logmodal").classList.add("hidden");
 }
 
+// ---- shell ----
+function syncHeaderHeight() {
+  const h = $("topbar").offsetHeight;
+  if (h) document.documentElement.style.setProperty("--hdr", h + "px");
+}
+
+function applyFold(folded) {
+  const stack = $("stack");
+  stack.classList.toggle("folded", folded);
+  for (const id of ["evpanel", "dashpanel"]) {
+    const p = $(id);
+    if (folded) { p.dataset.wasOpen = p.open ? "1" : ""; p.open = false; }
+    else { p.open = p.dataset.wasOpen !== ""; }
+  }
+  $("fold").textContent = folded ? "▸" : "▾";
+  try { localStorage.setItem("deck.folded", folded ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+
+async function refresh() {
+  const { ok, data } = await api("GET", "/api/status");
+  const dot = $("dot");
+  if (!ok) {
+    dot.className = "dot dead";
+    $("summary").textContent = "API 不可用";
+    return;
+  }
+  dot.className = "dot live";
+  const m = data.mem || {}, g = data.gpu || {};
+  let s = `RAM ${fmtMB(m.available_mb)} 可用`;
+  if (g.ok) s += ` · GPU ${fmtMB(g.free_mb)} 空闲`;
+  $("summary").textContent = s;
+  $("listen").textContent = "listen " + (data.listen || "");
+  const entries = data.entries || [];
+  renderEntries(entries);
+  renderOps(entries);
+  renderDashboard(data.host, data.budgets, entries);
+}
+
 $("refresh").onclick = refresh;
 $("logclose").onclick = closeLog;
 $("logmodal").onclick = (e) => { if (e.target.id === "logmodal") closeLog(); };
 $("presetclose").onclick = closePreset;
 $("presetmodal").onclick = (e) => { if (e.target.id === "presetmodal") closePreset(); };
 $("scanbtn").onclick = doScan;
+$("fold").onclick = () => applyFold(!$("stack").classList.contains("folded"));
+window.addEventListener("resize", syncHeaderHeight);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeLog(); closePreset(); }
 });
 
+let folded = false;
+try { folded = localStorage.getItem("deck.folded") === "1"; } catch (e) { /* ignore */ }
+applyFold(folded);
+syncHeaderHeight();
 refresh();
 setInterval(refresh, 2000);

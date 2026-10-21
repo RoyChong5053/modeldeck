@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"modeldeck/internal/runtime"
 	"modeldeck/internal/scan"
 	"modeldeck/internal/sched"
+	"modeldeck/internal/version"
 )
 
 // Server wires the control plane, the data plane, and the WebUI onto one port.
@@ -29,17 +31,24 @@ type Server struct {
 	proxy *proxy.Service
 	web   http.Handler
 
+	hostname  string
+	startedAt time.Time
+
 	// mu guards edits to cfg.Entries (create/rename/delete) and readers of it.
 	mu sync.RWMutex
 }
 
 func New(cfg *config.Config, reg *registry.Registry, sup *runtime.Supervisor, sch *sched.Scheduler, pr *proxy.Service, web http.Handler) *Server {
-	return &Server{cfg: cfg, reg: reg, sup: sup, sch: sch, proxy: pr, web: web}
+	host, _ := os.Hostname()
+	return &Server{
+		cfg: cfg, reg: reg, sup: sup, sch: sch, proxy: pr, web: web,
+		hostname: host, startedAt: time.Now(),
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
-	if !s.authorized(r) {
+	if !s.authorized(w, r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"message": "unauthorized"}})
 		return
 	}
@@ -57,7 +66,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) authorized(r *http.Request) bool {
+// authorized checks the bearer token. The WebUI cannot set headers on
+// EventSource/fetch from a plain page, so a request that carries the token
+// (header or ?token=) also receives a session cookie the browser replays.
+func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 	token := s.cfg.Server.Token
 	if token == "" {
 		return true
@@ -66,10 +78,33 @@ func (s *Server) authorized(r *http.Request) bool {
 	if p == "/health" || p == "/" || strings.HasPrefix(p, "/static/") {
 		return true
 	}
-	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == token {
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value == token {
 		return true
 	}
-	return r.URL.Query().Get("token") == token
+	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == token {
+		s.setSession(w, token)
+		return true
+	}
+	if q := r.URL.Query().Get("token"); q == token {
+		s.setSession(w, token)
+		return true
+	}
+	return false
+}
+
+const sessionCookie = "deck_session"
+
+// setSession hands the browser a cookie carrying the token, so the WebUI
+// works unchanged once a token is configured.
+func (s *Server) setSession(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   7 * 24 * 3600,
+	})
 }
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
@@ -152,7 +187,43 @@ func (s *Server) statusPayload() map[string]any {
 		"serialize_unknown_gpu": s.cfg.Budgets.SerializeUnknownGPUOn(),
 	}
 	payload["listen"] = s.cfg.Server.Listen
+	payload["host"] = s.hostPayload()
 	return payload
+}
+
+// hostPayload describes the machine deck runs on: identity plus live hardware
+// status, so a browser with five deck tabs open can tell them apart.
+func (s *Server) hostPayload() map[string]any {
+	gpu := s.sup.GPU()
+	mem := runtime.ReadMem()
+	cpu := runtime.ReadCPU()
+	return map[string]any{
+		"hostname":      s.hostname,
+		"label":         s.cfg.Server.Label,
+		"version":       version.Version,
+		"uptime_s":      int64(time.Since(s.startedAt).Seconds()),
+		"host_uptime_s": runtime.ReadUptime(),
+		"listen":        s.cfg.Server.Listen,
+		"gpu": map[string]any{
+			"ok":       gpu.OK,
+			"name":     gpu.Name,
+			"used_mb":  gpu.UsedMB,
+			"free_mb":  gpu.FreeMB,
+			"total_mb": gpu.TotalMB,
+			"util_pct": gpu.UtilPct,
+			"temp_c":   gpu.TempC,
+		},
+		"cpu": map[string]any{
+			"model": cpu.Model,
+			"cores": cpu.Cores,
+			"load1": cpu.Load1,
+		},
+		"mem": map[string]any{
+			"total_mb":     mem.TotalMB,
+			"available_mb": mem.AvailableMB,
+			"used_mb":      mem.UsedMB,
+		},
+	}
 }
 
 func (s *Server) memPayload() map[string]any {

@@ -5,10 +5,13 @@ Port comes from $DECK_PORT so the same script serves several entries.
 """
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("DECK_PORT", "0"))
 NAME = os.environ.get("DECK_ENTRY", "fake")
+# Optional artificial delay so tests can observe "request in flight" states.
+DELAY = float(os.environ.get("FAKE_DELAY", "0"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -38,6 +41,10 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(raw or b"{}")
         except Exception:
             req = {}
+        # A request may ask for a delay: {"model": "...", "delay": 3}
+        delay = DELAY or float(req.get("delay", 0) or 0)
+        if delay > 0:
+            time.sleep(delay)
         if self.path == "/v1/chat/completions":
             self._send(200, {
                 "id": "chatcmpl-fake",

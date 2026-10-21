@@ -2,36 +2,63 @@
 <html lang="zh">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1116">
   <title>ModelDeck</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header>
+  <header id="topbar">
     <div class="brand">
       <span class="dot" id="dot"></span>
       <h1>ModelDeck</h1>
+      <span id="hostlabel" class="hostlabel"></span>
     </div>
     <div id="summary" class="summary">connecting…</div>
-    <button id="refresh" class="ghost">刷新</button>
+    <div class="head-actions">
+      <button id="fold" class="ghost" title="收起/展开面板">▾</button>
+      <button id="refresh" class="ghost">刷新</button>
+    </div>
   </header>
 
   <main>
+    <div class="stack" id="stack">
+      <details class="panel" id="evpanel" open>
+        <summary class="panel-head">
+          <h2>Events</h2>
+          <span id="opsinfo" class="muted"></span>
+        </summary>
+        <div id="ops" class="ops"></div>
+        <pre id="events" class="events"></pre>
+      </details>
+
+      <details class="panel" id="dashpanel" open>
+        <summary class="panel-head">
+          <h2>Dashboard</h2>
+          <span id="dashinfo" class="muted"></span>
+        </summary>
+        <div id="dashstrip" class="strip"></div>
+        <div id="dash" class="grid"></div>
+      </details>
+    </div>
+
     <section class="panel">
       <div class="panel-head">
         <h2>Entries</h2>
         <span id="listen" class="muted"></span>
       </div>
-      <table id="entries">
-        <thead>
-          <tr>
-            <th>模型</th><th>状态</th><th>端口</th><th>在飞</th>
-            <th>RSS</th><th>VRAM</th><th>空闲</th><th>操作</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="tablewrap">
+        <table id="entries" class="responsive">
+          <thead>
+            <tr>
+              <th>模型</th><th>状态</th><th>端口</th><th>在飞</th>
+              <th>RSS</th><th>VRAM</th><th>空闲</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="panel">
@@ -40,17 +67,7 @@
         <button id="scanbtn" class="primary">扫描脚本</button>
         <span id="scaninfo" class="muted"></span>
       </div>
-      <div id="scanresult"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>Budgets</h2></div>
-      <div id="budgets" class="grid"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>Events</h2></div>
-      <pre id="events" class="events"></pre>
+      <div id="scanresult" class="tablewrap"></div>
     </section>
   </main>
 

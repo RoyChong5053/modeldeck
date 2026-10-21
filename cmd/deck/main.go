@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,10 +21,9 @@ import (
 	"modeldeck/internal/runtime"
 	"modeldeck/internal/scan"
 	"modeldeck/internal/sched"
+	"modeldeck/internal/version"
 	"modeldeck/internal/web"
 )
-
-const version = "0.1.0"
 
 func main() {
 	args := os.Args[1:]
@@ -77,7 +77,7 @@ func main() {
 	case "env":
 		runEnv(cfgPath, rest)
 	case "version":
-		fmt.Printf("modeldeck deck v%s\n", version)
+		fmt.Printf("modeldeck deck v%s\n", version.Version)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		usage()
@@ -269,14 +269,19 @@ func runServe(cfgPath string, keep bool) {
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
-	fmt.Printf("modeldeck v%s listening on http://%s\n", version, cfg.Server.Listen)
+	fmt.Printf("modeldeck v%s listening on http://%s\n", version.Version, cfg.Server.Listen)
 	fmt.Printf("  config : %s\n", cfgPath)
 	fmt.Printf("  state  : %s\n", cfg.Server.StateDir)
 	fmt.Printf("  entries: %d\n", len(cfg.Entries))
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		ln, err := listenWithFallback(cfg.Server.Listen)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -305,6 +310,27 @@ func runServe(cfgPath string, keep bool) {
 			}
 		}
 	}
+}
+
+// listenWithFallback binds the configured address. When that address is not
+// available (LAN cable unplugged, address gone), it falls back to loopback so
+// the service still comes up locally instead of crash-looping.
+func listenWithFallback(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln, nil
+	}
+	host, port, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil || host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return nil, err
+	}
+	fallback := net.JoinHostPort("127.0.0.1", port)
+	fmt.Fprintf(os.Stderr, "listen %s failed (%v) → falling back to %s\n", addr, err, fallback)
+	ln2, err2 := net.Listen("tcp", fallback)
+	if err2 != nil {
+		return nil, fmt.Errorf("listen %s: %w (fallback %s: %v)", addr, err, fallback, err2)
+	}
+	return ln2, nil
 }
 
 func runValidate(cfgPath string) {
@@ -398,11 +424,19 @@ func runEnv(cfgPath string, rest []string) {
 	}
 	base := controlBase(cfg)
 	fmt.Printf("export OPENAI_BASE_URL=%s/v1\n", base)
-	fmt.Printf("export OPENAI_API_KEY=modeldeck\n")
+	key := cfg.Server.Token
+	if key == "" {
+		key = "modeldeck"
+	}
+	fmt.Printf("export OPENAI_API_KEY=%s\n", key)
 	fmt.Printf("export OPENAI_MODEL=%s\n", e.ID)
 	fmt.Println()
 	fmt.Printf(`curl -s %s/v1/chat/completions -H 'Content-Type: application/json' \`+"\n", base)
 	fmt.Printf("  -d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'\n", e.ID)
+	if cfg.Server.Token != "" {
+		fmt.Println()
+		fmt.Printf("auth: -H 'Authorization: Bearer %s'\n", cfg.Server.Token)
+	}
 	fmt.Println()
 	fmt.Printf("generic passthrough: %s/run/%s/<path>\n", base, e.ID)
 }

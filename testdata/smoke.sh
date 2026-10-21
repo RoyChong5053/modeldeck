@@ -167,6 +167,41 @@ ls "$STATE_DIR"/trash/ 2>/dev/null | grep -q alpha3; ck "deleted entry written t
 # 18. config stays valid after mutations
 "$DECK" validate -config "$CONFIG" >/dev/null 2>&1; ck "config still valid after mutations" $?
 
+# 19. status carries the host identity (hostname + hardware)
+host=$(curl -s "$BASE/api/status" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+h=d.get('host') or {}
+print(h.get('hostname',''))
+")
+[ -n "$host" ]; ck "status reports the host identity" $?
+
+# 20. token mode: /api needs auth, the WebUI gets a session cookie
+TOKPORT=12690
+TOKCFG="$STATE_DIR/token-entries.yaml"
+mkdir -p "$STATE_DIR"
+sed "s|^    listen: .*|    listen: 127.0.0.1:$TOKPORT|; s|^    token: .*|    token: smoke-token|" \
+  "$CONFIG" > "$TOKCFG"
+"$DECK" serve -config "$TOKCFG" > "$STATE_DIR/token-deck.log" 2>&1 &
+TOKDECK=$!
+sleep 1.5
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$TOKPORT/api/status")
+[ "$code" = "401" ]; ck "token mode: /api/status without token -> 401" $?
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$TOKPORT/health")
+[ "$code" = "200" ]; ck "token mode: /health stays open" $?
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer smoke-token' \
+  "http://127.0.0.1:$TOKPORT/api/status")
+[ "$code" = "200" ]; ck "token mode: bearer token accepted" $?
+code=$(curl -s -c "$STATE_DIR/cookie.txt" -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$TOKPORT/api/status?token=smoke-token")
+[ "$code" = "200" ]; ck "token mode: ?token= accepted" $?
+code=$(curl -s -b "$STATE_DIR/cookie.txt" -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$TOKPORT/api/status")
+[ "$code" = "200" ]; ck "token mode: session cookie works for the WebUI" $?
+kill "$TOKDECK" 2>/dev/null
+wait "$TOKDECK" 2>/dev/null
+sleep 0.3
+
 echo
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]

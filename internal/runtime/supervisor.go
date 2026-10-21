@@ -626,6 +626,8 @@ func groupPIDs(pgid int) []int {
 }
 
 // cleanupOrphans kills processes started by a previous deck instance.
+// Only orphans whose original deck is gone are killed: a second deck running
+// side by side (tests, a second config) must not tear down the live one.
 func (s *Supervisor) cleanupOrphans() {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -656,9 +658,26 @@ func (s *Supervisor) cleanupOrphans() {
 		if deckEntry == "" || deckPid == "" || deckPid == self {
 			continue
 		}
+		if deckAlive(deckPid) {
+			continue // another live deck owns it
+		}
 		pgid := procGroup(pid)
 		if pgid > 0 {
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	}
+}
+
+// deckAlive reports whether the deck process that started a child is still
+// running. A live owner means the child is not an orphan.
+func deckAlive(pid string) bool {
+	n, err := strconv.Atoi(pid)
+	if err != nil || n <= 0 {
+		return false
+	}
+	b, err := os.ReadFile("/proc/" + pid + "/cmdline")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "deck")
 }

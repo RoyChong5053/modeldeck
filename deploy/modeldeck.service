@@ -1,0 +1,17 @@
+[Unit]
+Description=modeldeck model scheduler
+Documentation=https://github.com/RoyChong5053/modeldeck
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/modeldeck
+ExecStart=%h/modeldeck/deck serve -config %h/.config/modeldeck/entries.yaml
+Restart=always
+RestartSec=2
+Environment=HOME=%h
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

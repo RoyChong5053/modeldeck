@@ -26,15 +26,25 @@
 - [x] 冒烟测试扩展到 33/33（新增 discovery/preset/clone/rename/trash + 未测显存 GPU 串行；用临时配置副本，避免污染仓库）
 - [x] 首次运行体验：`deck init`（扫描默认目录生成配置；重名 id 用目录提示去重）、`start.sh` 缺配置时自动 init；`deck serve` 缺配置时给出明确指引
 - [x] 首跑安全：`budgets.serialize_unknown_gpu`（默认 true）——实测显存未知的两个 GPU entry 不并发，避免 8GB 卡首次并发 OOM
-- [ ] P1-e 预设参数表单写回脚本 → 归入 P2
-- [ ] P2 预设表单写回脚本 + server-selfunload + 资源历史
-- [ ] P3 job 模式 + 旧端口 shim + 多设备 agent
+- [x] P1-e 预设参数表单写回脚本 → 归入 P2
+- [x] P2 预设表单写回脚本 + server-selfunload + 资源历史
+- [x] P3 job 模式 + 旧端口 shim + 多设备 agent
+- [x] WebUI 移动端重构 + 置顶 Events/Dashboard + 主机身份（hostname/label/硬件状态）
+- [x] 鉴权补洞：设了 `server.token` 时 WebUI 仍可用（`?token=` → session cookie）
+- [x] systemd 用户级服务：`deploy/install-systemd.sh`（按当前 checkout 生成 unit）
+- [ ] 调度器 P0 安全修复（真实 free 显存 / 悲观未知 / 启动预留 / 驱逐后等显存）
+- [ ] L1/L2/L3 资源分级模型（tier + 并发上限 + 独占 + 物理余量）
+- [ ] FIFO 排队队列 + `/api/queue` 可观测
 
 ### WebUI 验证
 
 - 浏览器渲染 OK（Dashboard/Entries/Budgets/Events）；入口 `/`、`/static/*` 正常。
 - 表格改为 keyed 原地更新（不再每 2s 重建 DOM），UI 点“启动”可正确拉起 entry。
 - 修过的两个 bug：嵌入静态资源未剥 `/static` 前缀（404）；行按钮闭包读到未赋值的 `refs.id`。
+- 2026-10-21 移动端重构：窄屏下表格变卡片（`data-label` + `table.responsive`）；
+  Events（进行中运作）与 Dashboard（主机/硬件/预算）置顶并可折叠；`/api/status` 增加
+  `host` 块（hostname / label / 版本 / uptime / GPU / CPU / RAM），页签标题与主机色块用于
+  区分多台设备；手机端 Dashboard 退化为一行可横向滚动的状态条。
 
 ### P1 落地说明
 
@@ -241,15 +251,51 @@ model 解析顺序：`X-Deck-Model` 头 → `?model=` → JSON body 的 `model` 
 
 ## 10. 下一步（恢复上下文后从这里继续）
 
-P0 全部完成；P1 已落地 a–d（扫描导入 / 只读预设 / 改名克隆回收站 / 资源写回）、便利脚本与首跑引导。
-冒烟 33/33，真机 CPU embed 验证通过。
+P0/P1 全部完成；WebUI 移动端重构 + 主机身份 + systemd 部署已落地，冒烟 39/39。
 
-后续：
+### 10.1 调度器 P0 安全修复（治本机 8GB 卡 OOM 风险）
 
-1. P1-e/P2：预设**表单编辑写回脚本**——改动 `--ctx`/`-ngl`/`--port` 等参数（写回前备份 + `zsh -n` 语法检查 + diff 预览）。
-2. P2：`server-selfunload`（如 audio.cpp `--idle-unload-ms`）与资源历史曲线（Peak 采样时序）。
-3. 真机再补 GPU chat（12888）+ CPU rerank（11437），验证 VRAM 预算驱逐与 CPU/GPU 共存。
-4. P3：job 模式、旧端口 shim、多设备 agent（d3180 Kokoro / lgv35）。
+审计发现（2026-10-21，本机 RTX 4060 8188MB）：
 
-回归方式：`./update_build.sh` 后用 `run_smoke.sh` 或
-`./deck serve -config <临时配置> &` + `bash testdata/smoke.sh`。
+1. **预算看不见别人占的显存**：`budgetV = total - reserve`（8188-800=7388），但 deck 只统计
+   自己子进程；桌面 ~1.1GB + 手工起的 llama-server（220+274MB）→ 真实可用仅 6764MB。
+   → 改为用 nvidia-smi 的**真实 free**，决策时现读。
+2. **启动中的 entry 预留显存 = 0**：L1 加载 30–60s 期间显存从 0 涨到 6GB，别的 GPU entry
+   会被放进来。→ `starting` 按 `need(E)` 悲观记账。
+3. **未知显存按 0 算**：`serialize_unknown_gpu` 只互斥「未知 vs 未知」；已知大 + 未知 = 放行。
+   → 未知按 tier 默认估值（L1 90% 卡 / L2 45% / L3 128MB）。
+4. **驱逐后不等显存释放**：`Stop` 只等端口。→ 轮询 nvidia-smi 确认回落再启下一个。
+
+### 10.2 L1/L2/L3 资源分级模型
+
+```yaml
+budgets:
+  gpu: { reserve_mb: 256 }
+  tiers:
+    L1: { max_concurrent: 1, exclusive_with: [L1, L2] }   # 独占整卡
+    L2: { max_concurrent: 2 }                              # 半卡，可同时两个
+    L3: { max_concurrent: 8, tiny: true }                  # 几十~几百MB，永远挤得进来
+entries:
+  - id: jina-rerank-no-vram-gpu
+    tier: L3          # 留空则自动推导
+```
+
+- **自动推导**：`placement: cpu` 不参与 GPU 分级；有实测峰值 → ≥60% 卡=L1 / ≥20%=L2 / 否则 L3；
+  无实测且脚本含 `-ngl 0` / `--no-kv-offload` → L3；否则 L1（悲观）。
+- **三条硬规则**：物理够放（真实 free − need ≥ reserve）→ 同 tier 并发 < max → 独占关系
+  （仅 L1↔L1/L2；L3 永不因级别被驱逐）。
+- 实测基线（本机）：`-ngl 0 --no-kv-offload` = 122MB；`-ngl 99` 的 jina = 220/274MB。
+
+### 10.3 FIFO 队列
+
+现在排队是 `waitCh` 广播唤醒（先来后到不保证）→ 改成每个 entry 一个 FIFO waiter 队列，
+并暴露 `GET /api/queue`（等待者、位次、等待时长）。
+
+### 10.4 其余
+
+- 预设**表单编辑写回脚本**（备份 + `zsh -n`）；`server-selfunload`；资源历史曲线。
+- 真机再补 GPU chat（12888）+ CPU rerank（11437），验证 VRAM 预算驱逐与 CPU/GPU 共存。
+- job 模式、旧端口 shim、多设备 agent（d3180 Kokoro / lgv35）。
+
+回归方式：`./update_build.sh` 后用临时配置副本跑
+`./deck serve -config <临时配置> &` + `bash testdata/smoke.sh`（当前 39/39）。

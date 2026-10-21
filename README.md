@@ -14,9 +14,15 @@ clients keep working; you just point `OPENAI_BASE_URL` at `deck` and pick a mode
 
 **P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, first-run config
 bootstrap (`deck init` / `start.sh`), and entry management (discovery, read-only presets,
-rename/clone/trash with live config write-back). Validated by a 33-check smoke suite
+rename/clone/trash with live config write-back). Validated by a 39-check smoke suite
 (`testdata/smoke.sh`) and against a real backend (`~/LLM/jina-v5-embed-CPU.sh`). See
 [`docs/PLAN.md`](docs/PLAN.md) for the full plan and roadmap (P1–P3).
+
+The WebUI is built for phones first: the entries table collapses into cards on narrow
+screens, and the **Events** + **Dashboard** panels are pinned to the top so the ongoing
+operations and the hardware of the machine you are looking at are always visible. Every
+device shows its own hostname (coloured chip + browser tab title), so five deck tabs are
+told apart at a glance.
 
 ## Quick start
 
@@ -33,6 +39,18 @@ does not exist it creates it by scanning your script dirs (`deck init`: `~/LLM`,
 `~/scripts/LLM/**`, …) and merging in every script it finds with a port. Then it runs
 `deck serve` in the foreground; **Ctrl+C** stops deck and — by default — the models it
 started (`KEEP=1 ./start.sh` leaves them running). No systemd required.
+
+### Running as a service (Linux with systemd)
+
+```sh
+./deploy/install-systemd.sh       # writes ~/.config/systemd/user/modeldeck.service
+sudo loginctl enable-linger $USER # keep it running after logout
+journalctl --user -u modeldeck -f
+```
+
+The unit is generated from the current checkout, so it works from any directory
+(`~/modeldeck`, `~/mycode/modeldeck`, …). Phones have no systemd — use
+[`start-termux.sh`](#termux--android) there.
 
 ### Termux / Android
 
@@ -213,7 +231,7 @@ Duplicate ids across directories are disambiguated with a directory hint
 ## Control API
 
 ```
-GET    /api/status                         # entries + budgets + mem + gpu
+GET    /api/status                         # entries + budgets + mem + gpu + host
 GET    /api/mem
 GET    /api/entries
 GET    /api/entries/{id}
@@ -229,15 +247,21 @@ GET    /api/entries/{id}/logs?tail=200
 GET    /api/entries/{id}/logs/stream       # SSE
 ```
 
+`/api/status` also returns a `host` block — hostname, optional `server.label`, deck
+version, uptime, and live GPU/CPU/RAM figures. The WebUI uses it for the Dashboard panel
+and to label the tab with the machine it talks to.
+
 If `server.token` is set, `/api`, `/v1`, and `/run` require
 `Authorization: Bearer <token>` (or `?token=`); `/health` and the WebUI stay open.
+Opening the WebUI as `http://<host>:12688/?token=<token>` hands the browser a session
+cookie, so the dashboard keeps working without any client-side change.
 
 ## Config
 
 See `examples/entries.example.yaml`. Key fields:
 
 ```yaml
-server:  { listen: 127.0.0.1:12688, token: "", state_dir: ~/.local/state/modeldeck }
+server:  { listen: 127.0.0.1:12688, token: "", label: "", state_dir: ~/.local/state/modeldeck }
 budgets: { vram_reserve_mb, ram_reserve_mb, max_starting, on_no_fit: queue|reject,
            queue_timeout, ttl_default, serialize_unknown_gpu: true }
 entries:
@@ -274,7 +298,9 @@ internal/sched      three-layer scheduler + TTL reaper
 internal/proxy      OpenAI data plane + /run passthrough + model extraction
 internal/httpapi    control API + auth + SSE + entry management
 internal/scan       script discovery / preset parsing
+internal/version    build version
 internal/web        embedded WebUI (plain JS)
+deploy/             systemd user unit + installer
 start.sh            foreground launcher (Ctrl+C stops)
 update_build.sh     gofmt + vet + build (+ optional git pull)
 ```
