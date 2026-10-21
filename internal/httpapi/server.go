@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,6 +51,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"message": "unauthorized"}})
 		return
+	}
+	// Mutating calls are logged: "who deleted my entry" needs an answer.
+	if r.Method != http.MethodGet && strings.HasPrefix(p, "/api/") {
+		log.Printf("[api] %s %s from %s", r.Method, p, r.RemoteAddr)
 	}
 	switch {
 	case p == "/health":
