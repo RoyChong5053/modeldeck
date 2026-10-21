@@ -193,8 +193,11 @@ function renderDashboard(host, budgets, entries) {
   const b = budgets || {};
 
   const name = (h.hostname || "?");
-  $("hostlabel").textContent = h.label ? `${name} · ${h.label}` : name;
-  document.title = (h.label ? `${name} · ${h.label}` : name) + " — ModelDeck";
+  // a label that merely repeats the hostname adds nothing
+  const hn = name.toLowerCase(), lb = (h.label || "").toLowerCase();
+  const showLabel = h.label && lb !== hn && !hn.includes(lb) && !lb.includes(hn);
+  $("hostlabel").textContent = showLabel ? `${name} · ${h.label}` : name;
+  document.title = (showLabel ? `${name} · ${h.label}` : name) + " — ModelDeck";
   // a stable colour per host so five deck tabs are told apart at a glance
   let hue = 0;
   for (const ch of name) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
@@ -209,7 +212,7 @@ function renderDashboard(host, budgets, entries) {
 
   // phone strip: one scrollable row instead of a tall grid
   const strip = [
-    `<span class="s"><b>主机</b>${short(name, 16)}${h.label ? " · " + short(h.label, 12) : ""}</span>`,
+    `<span class="s"><b>主机</b>${short(name, 16)}${showLabel ? " · " + short(h.label, 12) : ""}</span>`,
     g.ok ? `<span class="s ${gpuHeat}"><b>GPU</b>${fmtMB(g.used_mb)}/${fmtMB(g.total_mb)} · ${g.util_pct || 0}%</span>` : "",
     `<span class="s"><b>CPU</b>${(c.load1 || 0).toFixed(2)} · ${c.cores || "?"}核</span>`,
     `<span class="s ${memHeat}"><b>RAM</b>${fmtMB(m.used_mb)}/${fmtMB(m.total_mb)}</span>`,

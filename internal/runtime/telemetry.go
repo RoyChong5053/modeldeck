@@ -244,3 +244,21 @@ func ReadUptime() int64 {
 	secs, _ := strconv.ParseFloat(fields[0], 64)
 	return int64(secs)
 }
+
+// DeviceName returns a name that identifies the machine. Android (Termux)
+// reports "localhost" for every phone, so the device model is used there.
+func DeviceName() string {
+	h, _ := os.Hostname()
+	if h != "" && h != "localhost" {
+		return h
+	}
+	if out, err := exec.Command("getprop", "ro.product.model").Output(); err == nil {
+		if m := strings.TrimSpace(string(out)); m != "" {
+			return m
+		}
+	}
+	if h == "" {
+		return "unknown"
+	}
+	return h
+}

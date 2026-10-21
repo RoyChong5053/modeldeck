@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -39,10 +38,9 @@ type Server struct {
 }
 
 func New(cfg *config.Config, reg *registry.Registry, sup *runtime.Supervisor, sch *sched.Scheduler, pr *proxy.Service, web http.Handler) *Server {
-	host, _ := os.Hostname()
 	return &Server{
 		cfg: cfg, reg: reg, sup: sup, sch: sch, proxy: pr, web: web,
-		hostname: host, startedAt: time.Now(),
+		hostname: runtime.DeviceName(), startedAt: time.Now(),
 	}
 }
 
