@@ -72,19 +72,22 @@ func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 	if token == "" {
 		return true
 	}
-	p := r.URL.Path
-	if p == "/health" || p == "/" || strings.HasPrefix(p, "/static/") {
-		return true
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil && c.Value == token {
+	// A request that carries the token is trusted and hands the browser a
+	// cookie — including the page itself, so opening the WebUI as
+	// http://host:12688/?token=... is enough to make the whole dashboard work.
+	if q := r.URL.Query().Get("token"); q == token {
+		s.setSession(w, token)
 		return true
 	}
 	if strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") == token {
 		s.setSession(w, token)
 		return true
 	}
-	if q := r.URL.Query().Get("token"); q == token {
-		s.setSession(w, token)
+	p := r.URL.Path
+	if p == "/health" || p == "/" || strings.HasPrefix(p, "/static/") {
+		return true
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value == token {
 		return true
 	}
 	return false

@@ -198,6 +198,13 @@ code=$(curl -s -c "$STATE_DIR/cookie.txt" -o /dev/null -w '%{http_code}' \
 code=$(curl -s -b "$STATE_DIR/cookie.txt" -o /dev/null -w '%{http_code}' \
   "http://127.0.0.1:$TOKPORT/api/status")
 [ "$code" = "200" ]; ck "token mode: session cookie works for the WebUI" $?
+# opening the page with ?token= must hand the browser the cookie
+code=$(curl -s -c "$STATE_DIR/cookie2.txt" -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$TOKPORT/?token=smoke-token")
+[ "$code" = "200" ]; ck "token mode: WebUI page accepts ?token=" $?
+code=$(curl -s -b "$STATE_DIR/cookie2.txt" -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$TOKPORT/api/status")
+[ "$code" = "200" ]; ck "token mode: page cookie unlocks the dashboard" $?
 kill "$TOKDECK" 2>/dev/null
 wait "$TOKDECK" 2>/dev/null
 sleep 0.3
