@@ -104,17 +104,26 @@ func ScanDirs(dirs []string) ([]Candidate, error) {
 }
 
 var (
-	reAssign   = regexp.MustCompile(`(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	reExec     = regexp.MustCompile(`(?m)^\s*exec\s+("[^"]+"|'[^']+'|\S+)`)
-	reExecEnv  = regexp.MustCompile(`(?m)^\s*exec\s+env\s+("[^"]+"|'[^']+'|\S+)`)
-	rePortLong = regexp.MustCompile(`--port[= ](\d{2,5})`)
+	reAssign  = regexp.MustCompile(`(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+	reExec    = regexp.MustCompile(`(?m)^\s*exec\s+("[^"]+"|'[^']+'|\S+)`)
+	reExecEnv = regexp.MustCompile(`(?m)^\s*exec\s+env\s+("[^"]+"|'[^']+'|\S+)`)
+	// Flag values may be quoted: --port "11439" is as common as --port 11439.
+	rePortLong = regexp.MustCompile(`--port[= ]\s*"?(\d{2,5})"?`)
 	rePortJSON = regexp.MustCompile(`"port"\s*:\s*(\d{2,5})`)
-	reHostLong = regexp.MustCompile(`--host[= ]("?[0-9A-Za-z.:\[\]-]+"?)`)
+	reHostLong = regexp.MustCompile(`--host[= ]\s*"?([0-9A-Za-z.:\[\]-]+)"?`)
 	reHostJSON = regexp.MustCompile(`"host"\s*:\s*"([^"]+)"`)
 	reModel    = regexp.MustCompile(`(?:^|\s)(?:-m|--model)[= ]("[^"]+"|'[^']+'|[^\s]+)`)
 	reNGL      = regexp.MustCompile(`(?:-ngl|--n-gpu-layers|--ngl)[= ](-?\d+)`)
 	reCtx      = regexp.MustCompile(`(?:-c|--ctx-size)[= ](\d+)`)
 	reDevice   = regexp.MustCompile(`--device[= ]("[^"]+"|\S+)`)
+
+	// Shell parameter expansion with a fallback: ${VAR:-default},
+	// ${VAR-default}, ${VAR:=default}, ${VAR=default}. A launcher that writes
+	// PORT="${PORT:-11439}" hides its port from every naive reader — and this
+	// scanner used to be that naive, which left the entry un-importable.
+	reShellDefault = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-|:=|-|=)([^}]*)\}`)
+	reShellBrace   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	reShellPlain   = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
 var knownBinaries = []string{
@@ -130,10 +139,7 @@ func ParseScript(path string) (*Candidate, error) {
 	}
 	text := string(raw)
 
-	vars := map[string]string{}
-	for _, m := range reAssign.FindAllStringSubmatch(text, -1) {
-		vars[m[1]] = unquote(strings.TrimSpace(m[2]))
-	}
+	vars := resolveAssignments(text)
 	expanded := expandVars(text, vars)
 
 	c := &Candidate{
@@ -255,7 +261,8 @@ func guessPlacement(path, text string, flags []string) string {
 		if f == "-ngl 0" {
 			return "cpu"
 		}
-		if strings.HasPrefix(f, "--device") && strings.Contains(f, "cpu") {
+		// "--device CPU" must count as CPU whatever the case is.
+		if strings.HasPrefix(f, "--device") && strings.Contains(strings.ToLower(f), "cpu") {
 			return "cpu"
 		}
 	}
@@ -265,23 +272,71 @@ func guessPlacement(path, text string, flags []string) string {
 	return "gpu"
 }
 
+// resolveAssignments reads the NAME=value assignments of a script and returns
+// the values the script would really use.
+//
+// The interesting part is the shell's default expansion. A launcher usually
+// writes
+//
+//	PORT="${PORT:-11439}"
+//	exec "$BIN" serve "$MODEL" --port "$PORT"
+//
+// which means "11439 unless the environment says otherwise". A scanner only
+// sees the file, so the default is the honest answer — and without it the
+// port stays invisible and the entry cannot be imported at all.
+//
+// Assignments may reference each other ("BIN=$PROJECT/build/speech"), so the
+// values are resolved to a fixed point over a few passes.
+func resolveAssignments(text string) map[string]string {
+	raw := map[string]string{}
+	for _, m := range reAssign.FindAllStringSubmatch(text, -1) {
+		raw[m[1]] = unquote(strings.TrimSpace(m[2]))
+	}
+	vars := map[string]string{}
+	for i := 0; i < 8; i++ {
+		changed := false
+		for name, v := range raw {
+			nv := expandVars(v, vars)
+			if vars[name] != nv {
+				vars[name] = nv
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return vars
+}
+
+// expandVars substitutes the shell variables of a text.
+//
+// ${VAR:-default} and friends fall back to the default when the variable is
+// unknown or empty; ${VAR} and $VAR expand to the known value, or stay as
+// they are when the variable is unknown.
 func expandVars(text string, vars map[string]string) string {
-	// ${VAR} form first, then $VAR.
-	reBrace := regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-	text = reBrace.ReplaceAllStringFunc(text, func(s string) string {
-		name := s[2 : len(s)-1]
-		if v, ok := vars[name]; ok {
+	text = reShellDefault.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reShellDefault.FindStringSubmatch(m)
+		name, def := sub[1], sub[3]
+		if v, ok := vars[name]; ok && v != "" {
 			return v
 		}
-		return s
+		// unset or empty -> the script's own default
+		return def
 	})
-	rePlain := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)`)
-	text = rePlain.ReplaceAllStringFunc(text, func(s string) string {
-		name := s[1:]
+	text = reShellBrace.ReplaceAllStringFunc(text, func(m string) string {
+		name := reShellBrace.FindStringSubmatch(m)[1]
 		if v, ok := vars[name]; ok {
 			return v
 		}
-		return s
+		return m
+	})
+	text = reShellPlain.ReplaceAllStringFunc(text, func(m string) string {
+		name := reShellPlain.FindStringSubmatch(m)[1]
+		if v, ok := vars[name]; ok {
+			return v
+		}
+		return m
 	})
 	return text
 }
