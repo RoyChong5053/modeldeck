@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,12 +317,14 @@ func (s *Supervisor) waitProc(rt *Runtime, cmd *exec.Cmd) {
 
 	// Feed measured resources back into the config (unless pinned manually).
 	if !rt.Entry.ManualRes {
+		rt.mu.Lock()
 		if peak := rt.peakVRAM.Load(); peak > 0 {
 			rt.Entry.Resources.VRAMMB = int(peak)
 		}
 		if peak := rt.peakRSS.Load(); peak > 0 {
 			rt.Entry.Resources.RAMMB = int(peak / 1024)
 		}
+		rt.mu.Unlock()
 	}
 	s.notify(rt.Entry.ID)
 }
@@ -439,16 +440,15 @@ func (s *Supervisor) checkReady(e *config.Entry, rt *Runtime) bool {
 		// Ready.Pattern optionally gates readiness on the response body, for
 		// servers that answer 200 while their model is still loading.
 		if e.Ready.Pattern != "" {
-			re, err := regexp.Compile(e.Ready.Pattern)
-			if err != nil {
-				return false
+			if re := rt.readyRegex(e.Ready.Pattern); re != nil {
+				return re.Match(body)
 			}
-			return re.Match(body)
+			return false
 		}
 		return true
 	case "log":
-		re, err := regexp.Compile(e.Ready.Pattern)
-		if err != nil {
+		re := rt.readyRegex(e.Ready.Pattern)
+		if re == nil {
 			return false
 		}
 		for _, l := range rt.logs.Tail(200) {

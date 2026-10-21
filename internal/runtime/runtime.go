@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,12 @@ type Runtime struct {
 	readyCh  chan struct{}
 	doneCh   chan struct{}
 	readyErr string
+
+	// readyOnce/readyRE compile e.Ready.Pattern once for the entry's life.
+	// checkReady polls repeatedly during startup, so recompiling every tick
+	// would waste CPU; this caches it instead.
+	readyOnce sync.Once
+	readyRE   *regexp.Regexp
 }
 
 func NewRuntime(e *config.Entry, logPath string) *Runtime {
@@ -97,6 +104,19 @@ func (rt *Runtime) Pid() int {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.pid
+}
+
+// readyRegex compiles and caches the readiness pattern for this entry exactly
+// once, returning nil if compilation failed. checkReady may call it many times
+// per second while a model is still loading, so we do not recompile each time.
+func (rt *Runtime) readyRegex(pattern string) *regexp.Regexp {
+	rt.readyOnce.Do(func() {
+		re, err := regexp.Compile(pattern)
+		if err == nil {
+			rt.readyRE = re
+		}
+	})
+	return rt.readyRE
 }
 
 // Reset clears a failed state so a stale error does not stick to the entry

@@ -564,11 +564,6 @@ func (s *Server) entryConfig(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 func (s *Server) setTTL(w http.ResponseWriter, r *http.Request, id string) {
-	e, ok := s.reg.ByID(id)
-	if !ok {
-		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
-		return
-	}
 	if r.Method != http.MethodPost {
 		writeAPIErr(w, http.StatusMethodNotAllowed, "POST required")
 		return
@@ -585,7 +580,34 @@ func (s *Server) setTTL(w http.ResponseWriter, r *http.Request, id string) {
 		writeAPIErr(w, http.StatusBadRequest, "ttl must be >= 0")
 		return
 	}
-	e.TTL = &v
+	exists := false
+	s.mu.RLock()
+	for _, entry := range s.cfg.Entries {
+		if entry.ID == id {
+			exists = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if !exists {
+		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
+		return
+	}
+	// Route through commitEntries so the TTL is persisted, the registry rebuilt,
+	// and the reaper/scheduler observe it under s.mu. setTTL previously wrote the
+	// shared *config.Entry pointer without a lock, racing GET /api/entries, and
+	// never saved the change to disk (lost across restarts).
+	if err := s.commitEntries(func(list []*config.Entry) ([]*config.Entry, error) {
+		for _, x := range list {
+			if x.ID == id {
+				x.TTL = &v
+			}
+		}
+		return list, nil
+	}); err != nil {
+		writeAPIErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "ttl": v})
 }
 
