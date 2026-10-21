@@ -18,6 +18,8 @@ ls -la "$OUT"
 
 if [ "${1:-}" != "" ]; then
   HOST="$1"
+  echo "→ pulling sources on $HOST"
+  ssh "$HOST" 'cd ~/modeldeck && git pull --ff-only 2>&1 | tail -2'
   echo "→ pushing to $HOST"
   scp "$OUT" "$HOST:~/modeldeck/deck.new"
   ssh "$HOST" 'cd ~/modeldeck && mv deck.new deck && chmod 755 deck && touch deck && ./deck version && ./start-termux.sh restart'
