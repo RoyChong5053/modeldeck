@@ -94,6 +94,10 @@ Two phone-specific caveats:
   ready `/healthz`).
 - Scanned scripts on a CPU-only phone are tagged `placement: gpu`; change them to
   `placement: cpu` so they can run together (the RAM budget still applies).
+- Without a Go toolchain on the phone, cross-build with
+  `./deploy/build-android.sh <host>` — the target **must** be `GOOS=android`
+  (a `linux/arm64` build dies with SIGSYS as soon as deck spawns a model:
+  Android's seccomp blocks the `pidfd_open` probe the Go runtime performs).
 
 Do it by hand if you prefer:
 
