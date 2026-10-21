@@ -27,6 +27,13 @@ type Server struct {
 	Label      string `yaml:"label"`
 	StateDir   string `yaml:"state_dir"`
 	ScriptsDir string `yaml:"scripts_dir"`
+
+	// FileToken is the token as written in the YAML, and TokenSource says
+	// where the effective token came from ("config", "env", ".env", "").
+	// They are never serialized: a token that came from the environment must
+	// not be written back into the config file.
+	FileToken   string `yaml:"-"`
+	TokenSource string `yaml:"-"`
 }
 
 type Budgets struct {
@@ -134,6 +141,54 @@ func (e *Entry) StopGrace() int {
 	return e.Stop.GraceS
 }
 
+// ResolveToken determines the effective access token and remembers where it
+// came from. Order: the YAML value, then $DECK_TOKEN.
+//
+// The project folder's .env is *not* read here: the deployment layer (systemd
+// EnvironmentFile=, start-termux.sh) puts the token into the environment, so
+// a second deck instance on the same machine is never surprised by it.
+func (c *Config) ResolveToken() {
+	c.Server.FileToken = c.Server.Token
+	switch {
+	case c.Server.Token != "":
+		c.Server.TokenSource = "config"
+		return
+	}
+	if t := strings.TrimSpace(os.Getenv("DECK_TOKEN")); t != "" {
+		c.Server.Token = t
+		c.Server.TokenSource = "env"
+		return
+	}
+	c.Server.Token = ""
+	c.Server.TokenSource = ""
+}
+
+// EnvFileToken reads DECK_TOKEN from the .env next to the deck binary — the
+// project folder of the device. It is the per-device source of truth that the
+// deployment layer feeds into the environment.
+func EnvFileToken() (token, path string) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", ""
+	}
+	path = filepath.Join(filepath.Dir(exe), ".env")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", path
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(k) == "DECK_TOKEN" {
+			return strings.Trim(strings.TrimSpace(v), `"'`), path
+		}
+	}
+	return "", path
+}
+
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -145,6 +200,7 @@ func Load(path string) (*Config, error) {
 	}
 	c.Path = path
 	c.Normalize()
+	c.ResolveToken()
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -307,7 +363,17 @@ func Save(path string, c *Config) error {
 		return fmt.Errorf("config path is empty")
 	}
 	c.Normalize()
-	b, err := yaml.Marshal(c)
+	// A token that came from the environment or from .env stays there: only
+	// the value that was actually in the YAML goes back into the file.
+	out := *c
+	srv := c.Server
+	if srv.FileToken != "" {
+		srv.Token = srv.FileToken
+	} else if srv.TokenSource != "" {
+		srv.Token = ""
+	}
+	out.Server = srv
+	b, err := yaml.Marshal(&out)
 	if err != nil {
 		return err
 	}

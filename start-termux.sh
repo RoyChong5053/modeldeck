@@ -4,6 +4,7 @@
 #   ./start-termux.sh              build if needed, then serve in the foreground
 #   BG=1 ./start-termux.sh         serve in the background (survives ssh logout)
 #   ./start-termux.sh status       health + live entry table
+#   ./start-termux.sh token        show the access token (from ./.env)
 #   ./start-termux.sh logs         follow the background log
 #   ./start-termux.sh stop         stop deck (and the models it started)
 #
@@ -13,6 +14,10 @@
 #   MODELDECK_CONFIG=...           config path (default ~/.config/modeldeck/entries.yaml)
 #   KEEP=1                         leave started models running on exit
 #   BG=1                           run detached with nohup
+#
+# The access token lives in ./.env (this project folder, one file per device):
+#   DECK_TOKEN=deck-...
+# It is exported into the environment, so the YAML config needs no token.
 #
 # Termux notes: a wake lock is taken automatically; Android may still kill the
 # process when the battery is low, so keep the phone charging for long runs.
@@ -25,6 +30,7 @@ LISTEN="${DECK_LISTEN:-0.0.0.0:12688}"
 STATE_DIR="${MODELDECK_STATE_DIR:-$HOME/.local/state/modeldeck}"
 LOG="$STATE_DIR/deck.log"
 PIDFILE="$STATE_DIR/deck.pid"
+ENV_FILE="$PWD/.env"
 
 export PATH="$PREFIX/bin:$HOME/bin:/data/data/com.termux/files/usr/bin:$PATH"
 
@@ -40,9 +46,34 @@ wake_unlock() {
   have termux-wake-unlock && termux-wake-unlock || true
 }
 
-# Rewrite server.listen / server.token in the YAML config (only those lines).
+# The access token lives in the project folder (.env): one file per device,
+# easy to inspect and to copy to a new machine. It is exported into the
+# environment so the deck picks it up (the YAML may also carry a token).
+load_env() {
+  [ -f "$ENV_FILE" ] || return 0
+  DECK_TOKEN="$(sed -n 's/^DECK_TOKEN=//p' "$ENV_FILE" | head -n 1 | tr -d '"\r')"
+  [ -n "$DECK_TOKEN" ] && export DECK_TOKEN
+  return 0
+}
+
+ensure_env() {
+  load_env
+  if [ -z "${DECK_TOKEN:-}" ] && [ -x "$BIN" ]; then
+    "$BIN" token --write -config "$CONFIG" >/dev/null 2>&1 || true
+    load_env
+  fi
+}
+
+print_token() {
+  [ -n "${DECK_TOKEN:-}" ] || return 0
+  say "token  : $DECK_TOKEN"
+  say "env    : $ENV_FILE"
+}
+
+# Rewrite server.listen in the YAML config (only that line). The token is not
+# written into the YAML: it lives in the project folder's .env.
 patch_server() {
-  local file="$1" listen="$2" token="${3:-}" indent
+  local file="$1" listen="$2" indent
   # Keep the indentation the file already uses for server keys (2 or 4 spaces).
   indent="  "
   if grep -q '^[[:space:]]*state_dir:' "$file"; then
@@ -52,13 +83,6 @@ patch_server() {
     sed -i "s|^[[:space:]]*listen:.*|${indent}listen: $listen|" "$file"
   else
     sed -i "/^server:/a\\${indent}listen: $listen" "$file"
-  fi
-  if [ -n "$token" ]; then
-    if grep -q '^[[:space:]]*token:' "$file"; then
-      sed -i "s|^[[:space:]]*token:.*|${indent}token: $token|" "$file"
-    else
-      sed -i "/^[[:space:]]*listen:/a\\${indent}token: $token" "$file"
-    fi
   fi
 }
 
@@ -125,7 +149,8 @@ ensure_config() {
     "$BIN" init -config "$CONFIG" || die "deck init failed"
     echo
   fi
-  patch_server "$CONFIG" "$LISTEN" "${DECK_TOKEN:-}"
+  patch_server "$CONFIG" "$LISTEN"
+  ensure_env
 }
 
 start_foreground() {
@@ -147,7 +172,7 @@ start_foreground() {
   local ip; ip="$(lan_ip)"
   if [ -n "$ip" ]; then say "LAN    : http://$ip:${LISTEN##*:}/"; fi
   say "WebUI  : $(api_base)/"
-  if [ -n "${DECK_TOKEN:-}" ]; then say "token  : $DECK_TOKEN"; fi
+  print_token
   say "Ctrl+C to stop${KEEP:+ (KEEP=$KEEP)}"
   echo
 
@@ -184,7 +209,7 @@ start_background() {
       local ip; ip="$(lan_ip)"
       if [ -n "$ip" ]; then say "LAN    : http://$ip:${LISTEN##*:}/"; fi
       say "WebUI  : $(api_base)/"
-      if [ -n "${DECK_TOKEN:-}" ]; then say "token  : $DECK_TOKEN"; fi
+      print_token
       return 0
     fi
     sleep 0.2
@@ -237,6 +262,17 @@ show_status() {
   fi
 }
 
+show_token() {
+  ensure_env
+  if [ -n "${DECK_TOKEN:-}" ]; then
+    say "token  : $DECK_TOKEN"
+    say "env    : $ENV_FILE"
+  else
+    say "no token configured (no $ENV_FILE)"
+  fi
+  "$BIN" token -config "$CONFIG" 2>/dev/null | sed 's/^/  /' || true
+}
+
 # BG=1 is shorthand for the `bg` subcommand.
 if [ "${BG:-0}" = "1" ]; then
   set -- bg
@@ -247,6 +283,7 @@ case "${1:-start}" in
   stop) stop_deck ;;
   restart) stop_deck; start_background ;;
   status) show_status ;;
+  token) show_token ;;
   logs)
     [ -f "$LOG" ] || die "no log yet: $LOG"
     tail -n 200 -f "$LOG"
@@ -255,5 +292,5 @@ case "${1:-start}" in
   -h|--help|help)
     sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     ;;
-  *) die "unknown command: $1 (try: start | stop | restart | status | logs | bg)" ;;
+  *) die "unknown command: $1 (try: start | stop | restart | status | token | logs | bg)" ;;
 esac

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,7 +79,7 @@ func main() {
 	case "env":
 		runEnv(cfgPath, rest)
 	case "token":
-		runToken(cfgPath)
+		runToken(cfgPath, rest)
 	case "version":
 		fmt.Printf("modeldeck deck v%s\n", version.Version)
 	default:
@@ -275,7 +277,7 @@ func runServe(cfgPath string, keep bool) {
 	fmt.Printf("  config : %s\n", cfgPath)
 	fmt.Printf("  state  : %s\n", cfg.Server.StateDir)
 	fmt.Printf("  entries: %d\n", len(cfg.Entries))
-	for _, u := range webURLs(cfg) {
+	for _, u := range webURLs(cfg, cfg.Server.Token) {
 		fmt.Printf("  WebUI  : %s\n", u)
 	}
 
@@ -358,7 +360,7 @@ func listenAddrs(list string) []string {
 }
 
 // webURLs returns the URLs a human should open, token included when set.
-func webURLs(cfg *config.Config) []string {
+func webURLs(cfg *config.Config, token string) []string {
 	var out []string
 	for _, addr := range listenAddrs(cfg.Server.Listen) {
 		host, port, err := net.SplitHostPort(addr)
@@ -370,8 +372,8 @@ func webURLs(cfg *config.Config) []string {
 			host = "127.0.0.1"
 		}
 		u := fmt.Sprintf("http://%s:%s/", host, port)
-		if cfg.Server.Token != "" {
-			u += "?token=" + cfg.Server.Token
+		if token != "" {
+			u += "?token=" + token
 		}
 		out = append(out, u)
 	}
@@ -488,13 +490,47 @@ func runEnv(cfgPath string, rest []string) {
 
 // runToken prints everything needed to point a third-party client (one-api,
 // openai-compatible gateways, …) at this deck.
-func runToken(cfgPath string) {
+//
+//	deck token           show the token and a ready-to-paste one-api channel
+//	deck token --write   also make sure <project>/.env holds the token
+func runToken(cfgPath string, rest []string) {
 	cfg := loadConfig(cfgPath)
-	tok := cfg.Server.Token
+	write := false
+	for _, a := range rest {
+		switch a {
+		case "--write", "-w":
+			write = true
+		}
+	}
+
+	tok, src := cfg.Server.Token, cfg.Server.TokenSource
+	envPath := ""
+	realTok := tok
+	if write {
+		var err error
+		tok, envPath, err = ensureEnvFile(cfg)
+		if err != nil {
+			fatal(err)
+		}
+		realTok, src = tok, ".env"
+	} else if tok == "" {
+		// Fall back to the project folder's .env (the per-device source of
+		// truth) so the token is visible without exporting anything.
+		if t, p := config.EnvFileToken(); t != "" {
+			tok, realTok, src, envPath = t, t, ".env", p
+		}
+	}
 	if tok == "" {
 		tok = "(未设置令牌：任何人都能访问 /api /v1 /run)"
 	}
+
 	fmt.Printf("token      : %s\n", tok)
+	if src != "" {
+		fmt.Printf("来源       : %s\n", src)
+	}
+	if envPath != "" {
+		fmt.Printf("令牌文件   : %s\n", envPath)
+	}
 	fmt.Printf("本机 base   : %s\n", controlBase(cfg))
 	lan := ""
 	for _, addr := range listenAddrs(cfg.Server.Listen) {
@@ -515,19 +551,49 @@ func runToken(cfgPath string) {
 		lan = controlBase(cfg)
 	}
 	fmt.Printf("局域网 base : %s   ← 填到 one-api 渠道\n", lan)
-	for _, u := range webURLs(cfg) {
+	for _, u := range webURLs(cfg, realTok) {
 		fmt.Printf("webui      : %s\n", u)
 	}
 	fmt.Println()
 	fmt.Println("one-api 渠道（新建渠道时填这些）:")
 	fmt.Printf("  类型     : OpenAI\n")
 	fmt.Printf("  Base URL : %s\n", lan)
-	fmt.Printf("  密钥     : %s\n", cfg.Server.Token)
+	fmt.Printf("  密钥     : %s\n", realTok)
 	fmt.Printf("  模型     : %s\n", modelNames(cfg))
 	fmt.Println()
 	fmt.Println("客户端直连（在本机跑时）:")
 	fmt.Printf("  OPENAI_BASE_URL=%s/v1\n", controlBase(cfg))
-	fmt.Printf("  OPENAI_API_KEY=%s\n", cfg.Server.Token)
+	fmt.Printf("  OPENAI_API_KEY=%s\n", realTok)
+}
+
+// ensureEnvFile makes sure the project folder carries a .env with the access
+// token. That file is the single source of truth per device: copy it to a new
+// device and the token travels along. The deployment layer feeds it into the
+// environment (systemd EnvironmentFile=, start-termux.sh export).
+func ensureEnvFile(cfg *config.Config) (string, string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(filepath.Dir(exe), ".env")
+	if t, p := config.EnvFileToken(); t != "" {
+		return t, p, nil
+	}
+	tok := cfg.Server.Token
+	if tok == "" {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return "", "", err
+		}
+		tok = "deck-" + hex.EncodeToString(buf)
+	}
+	content := "# modeldeck access token — this device\n" +
+		"# 复制这个文件到新设备即可复用同一令牌；one-api 渠道的「密钥」填 DECK_TOKEN 的值。\n" +
+		"DECK_TOKEN=" + tok + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return "", "", err
+	}
+	return tok, path, nil
 }
 
 // modelNames lists the model names the deck answers to.

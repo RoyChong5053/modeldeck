@@ -7,6 +7,9 @@ BASE="${BASE:-http://127.0.0.1:12688}"
 CONFIG="${CONFIG:-testdata/entries.test.yaml}"
 STATE_DIR="${STATE_DIR:-/tmp/opencode/modeldeck-state}"
 DECK="${DECK:-/tmp/opencode/deck}"
+# The deck only reads $DECK_TOKEN from the environment, so the test instance
+# stays unauthenticated even when the project folder has a .env.
+unset DECK_TOKEN
 pass=0
 fail=0
 

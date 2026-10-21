@@ -17,6 +17,14 @@ START=1
 
 command -v systemctl >/dev/null 2>&1 || { echo "systemd not available (Termux? use ./start-termux.sh)" >&2; exit 1; }
 
+# The access token lives in the project folder (.env) — one file per device,
+# easy to inspect and to copy to a new machine.
+"$REPO/deck" token --write -config "$CONFIG" >/dev/null 2>&1 || true
+ENV_FILE="$REPO/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "warning: $ENV_FILE not found; the deck will start without a token" >&2
+fi
+
 mkdir -p "$UNIT_DIR"
 cat > "$UNIT" <<EOF
 [Unit]
@@ -28,6 +36,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$REPO
+EnvironmentFile=-$ENV_FILE
 ExecStart=$REPO/deck serve -config $CONFIG
 Restart=always
 RestartSec=2
@@ -49,5 +58,7 @@ fi
 echo
 echo "unit   : $UNIT"
 echo "config : $CONFIG"
+echo "token  : $ENV_FILE"
+grep -E '^DECK_TOKEN=' "$ENV_FILE" 2>/dev/null || true
 echo "log    : journalctl --user -u modeldeck -f"
 echo "linger : $(loginctl show-user "$USER" -p Linger 2>/dev/null | cut -d= -f2 || echo '?') (enable with: sudo loginctl enable-linger $USER)"

@@ -11,3 +11,6 @@
 *.swp
 
 deck-android-arm64
+
+# per-device secrets (access token)
+.env
