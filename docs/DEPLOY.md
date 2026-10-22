@@ -100,17 +100,26 @@ grep -oP 'DECK_TOKEN=\K\S+' ~/modeldeck/.env
 
 ### 2.3 WebUI 上能干什么
 
+界面全英文（其它文档/注释也尽量英文，终端输出同理）。
+
 | 按钮 | 作用 |
 |---|---|
-| **编辑** | 改这条 entry 的**启动脚本**、端口、参数、环境变量、就绪路径、TTL；改完直接「保存并启动」试跑，**不用碰 YAML**。脚本不存在会被拒绝；脚本里的 `--port` 会自动同步到端口 |
-| **🔒 锁定** | 锁住的模型**不会被 idle 自动卸载**，也**不会被别的模型挤掉**（显存不够时优先牺牲没锁的）。测试 ASR+TTS 这种场景锁上，省掉每次请求的冷启动延迟。状态写进 YAML，重启还在 |
-| **日志 / 清屏** | 看某个 entry 的进程日志；「清屏」清掉当前显示 |
-| **Events 面板的「清空」** | 清掉操作记录 |
+| **Edit** | 直接编辑这条 entry 的 **YAML 文本**（就是配置文件里那段），像 nano 改文件一样；改完「Save」写回，「Save & run」写回后重启试跑。字段名写错会被拒绝（不会静默丢弃），脚本路径不存在也会被拒绝 |
+| **🔒 Lock** | **保温**：锁住的模型空闲时**不会被 idle 自动卸载**，省掉每次从硬盘冷启动的延迟。但**不是**绝对保留：新请求来了显存/内存不够时，**锁住的模型照样被释放让位**（请求优先于保温）。要绝对不释放，用 YAML 里的 `evictable: false` |
+| **日志 / Clear** | 看某个 entry 的进程日志；「Clear」清掉当前显示 |
+| **Events 面板的「Clear」** | 清掉操作记录 |
 | **失败芯片上的 ✕** | 清掉"启动失败"状态（条目回到 stopped），否则那个红点会一直挂着 |
-| **Dashboard 的「复制链接」** | 复制一个带 token、手机能直接打开的地址 |
+| **Dashboard 的「Copy link」** | 复制一个带 token、手机能直接打开的地址 |
+| **顶部「Reload」** | 重新读一遍磁盘上的配置文件（`nano` 改完点这个就生效，不用重启 deck）。YAML 写坏会被拒绝并把错误显示出来，deck 保持原配置 |
 
-> 锁定 = YAML 里的 `pinned: true`。调度器（`internal/sched`）里，
-> 锁住的条目既不进 idle 回收，也不进驱逐名单。
+> 锁定 = YAML 里的 `pinned: true`。调度器（`internal/sched`）里：
+> 锁住的条目**不进 idle 回收**；但**可以被驱逐**——挑victim 时先动没锁的，
+> 实在不够了才动锁定的（同端口 lane / exclusive 冲突时也一样让位）。
+> `evictable: false` 才是"绝对不释放"。
+
+> 配置文件里的注释**不会**被 deck 的保存抹掉：保存时只重写真正改动的那条 entry
+> （`internal/config/merge.go`，yaml.Node 合并）。想手改就直接
+> `nano ~/.config/modeldeck/entries.yaml`，改完点 WebUI 的「Reload」。
 
 ### 2.4 API 客户端（one-api 等）
 
@@ -301,6 +310,10 @@ ssh lgv35 'cd ~/modeldeck && ./start-termux.sh status'
 | GET | `/api/status` | 全部状态：entry 列表、预算、主机硬件、**可达地址 `host.urls`** |
 | GET | `/api/entries/<id>/config` | 读一条 entry 的可编辑配置 + 脚本解析结果 |
 | POST | `/api/entries/<id>/config` | 改配置（`script`/`port`/`args`/`env`/`ttl`/`ready_path`…），**写回 YAML** |
+| GET | `/api/entries/<id>/yaml` | 读一条 entry 的 **YAML 文本**（WebUI 编辑器用的就是它） |
+| POST | `/api/entries/<id>/yaml` | 用 YAML 文本替换这条 entry（`{"yaml":"..."}`），写回 YAML |
+| GET | `/api/config` | 整个配置文件（文本） |
+| POST | `/api/config/reload` | **重读磁盘上的配置文件**（nano 改完用这个生效） |
 | POST | `/api/entries/<id>/lock` | 锁定/解锁（`{"locked":true}`），写回 YAML |
 | POST | `/api/entries/<id>/reset` | 清掉"启动失败"状态 |
 | POST | `/api/entries/<id>/{start,stop,restart}` | 启停（`?async=1` 立即返回） |
@@ -311,10 +324,15 @@ TOK=$(grep -oP 'DECK_TOKEN=\K\S+' ~/modeldeck/.env)
 curl -s -X POST http://127.0.0.1:12688/api/entries/gemma-rp/config \
   -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"script":"/home/roychong/LLM/gemma-rp.sh","port":12888}'
-# 锁住，别被 idle 卸载
+# 保温：空闲不卸载（显存不够时照样会让位）
 curl -s -X POST http://127.0.0.1:12688/api/entries/gemma-rp/lock \
   -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"locked":true}'
+# nano 改完 entries.yaml 之后，让 deck 重新读一遍
+curl -s -X POST http://127.0.0.1:12688/api/config/reload \
+  -H "Authorization: Bearer $TOK"
+# 克隆（终端里做，WebUI 没有这个按钮）
+./deck clone gemma-rp gemma-rp-2 --name "Gemma rp 2"
 ```
 
 ---

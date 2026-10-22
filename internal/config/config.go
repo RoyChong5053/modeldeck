@@ -22,7 +22,7 @@ type Config struct {
 type Server struct {
 	Listen string `yaml:"listen"`
 	Token  string `yaml:"token"`
-	// Label is a human name for this machine ("主力机", "m64", ...). It shows
+	// Label is a human name for this machine ("main-box", "m64", ...). It shows
 	// up in the WebUI so several devices are told apart at a glance.
 	Label      string `yaml:"label"`
 	StateDir   string `yaml:"state_dir"`
@@ -231,34 +231,39 @@ func (c *Config) Normalize() {
 		c.Budgets.TTLDefaultS = 300
 	}
 	for _, e := range c.Entries {
-		if e.Mode == "" {
-			e.Mode = "server"
+		e.Normalize()
+	}
+}
+
+// Normalize fills in the defaults of a single entry. It is idempotent.
+func (e *Entry) Normalize() {
+	if e.Mode == "" {
+		e.Mode = "server"
+	}
+	if e.Host == "" {
+		e.Host = "127.0.0.1"
+	}
+	if e.Placement == "" {
+		e.Placement = "gpu"
+	}
+	if e.Ready.Type == "" {
+		if e.Port > 0 {
+			e.Ready.Type = "tcp"
+		} else {
+			e.Ready.Type = "none"
 		}
-		if e.Host == "" {
-			e.Host = "127.0.0.1"
-		}
-		if e.Placement == "" {
-			e.Placement = "gpu"
-		}
-		if e.Ready.Type == "" {
-			if e.Port > 0 {
-				e.Ready.Type = "tcp"
-			} else {
-				e.Ready.Type = "none"
-			}
-		}
-		if e.Ready.Timeout <= 0 {
-			e.Ready.Timeout = 300
-		}
-		if e.Ready.Path == "" {
-			e.Ready.Path = "/health"
-		}
-		if e.Script != "" {
-			e.Script = expandHome(e.Script)
-		}
-		if e.Cwd != "" {
-			e.Cwd = expandHome(e.Cwd)
-		}
+	}
+	if e.Ready.Timeout <= 0 {
+		e.Ready.Timeout = 300
+	}
+	if e.Ready.Path == "" {
+		e.Ready.Path = "/health"
+	}
+	if e.Script != "" {
+		e.Script = expandHome(e.Script)
+	}
+	if e.Cwd != "" {
+		e.Cwd = expandHome(e.Cwd)
 	}
 }
 
@@ -363,50 +368,34 @@ func (e *Entry) Clone() *Entry {
 }
 
 // Save writes the config atomically, keeping a .bak copy of the previous file.
+//
+// This rewrites the whole file, so hand-written comments are lost. Use
+// SaveEntries when the file was edited by hand and the comments should stay.
 func Save(path string, c *Config) error {
 	if path == "" {
 		return fmt.Errorf("config path is empty")
 	}
 	c.Normalize()
-	// A token that came from the environment or from .env stays there: only
-	// the value that was actually in the YAML goes back into the file.
 	out := *c
+	out.Server = fileServer(c)
+	b, err := yaml.Marshal(&out)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, b)
+}
+
+// fileServer returns the server block as it should appear in the file. A token
+// that came from the environment or from .env stays there: only the value
+// that was actually in the YAML goes back into the file.
+func fileServer(c *Config) Server {
 	srv := c.Server
 	if srv.FileToken != "" {
 		srv.Token = srv.FileToken
 	} else if srv.TokenSource != "" {
 		srv.Token = ""
 	}
-	out.Server = srv
-	b, err := yaml.Marshal(&out)
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if old, err := os.ReadFile(path); err == nil {
-		_ = os.WriteFile(path+".bak", old, 0o644)
-	}
-	tmp, err := os.CreateTemp(dir, ".entries-*.yaml")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return srv
 }
 
 // WriteEntryFile writes a single entry as YAML (used for the trash).

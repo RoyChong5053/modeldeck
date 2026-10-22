@@ -183,7 +183,7 @@ print(h.get('hostname',''))
 TOKPORT=12690
 TOKCFG="$STATE_DIR/token-entries.yaml"
 mkdir -p "$STATE_DIR"
-sed "s|^    listen: .*|    listen: 127.0.0.1:$TOKPORT|; s|^    token: .*|    token: smoke-token|" \
+sed "s|^\( *\)listen: .*|\1listen: 127.0.0.1:$TOKPORT|; s|^\( *\)token: .*|\1token: smoke-token|" \
   "$CONFIG" > "$TOKCFG"
 "$DECK" serve -config "$TOKCFG" > "$STATE_DIR/token-deck.log" 2>&1 &
 TOKDECK=$!
@@ -215,7 +215,7 @@ sleep 0.3
 # 21. multi-address listen: every address in the list answers
 MULTIPORT=12692
 MULTICFG="$STATE_DIR/multi-entries.yaml"
-sed "s|^    listen: .*|    listen: 127.0.0.1:$MULTIPORT,127.0.0.1:$((MULTIPORT+1))|" \
+sed "s|^\( *\)listen: .*|\1listen: 127.0.0.1:$MULTIPORT,127.0.0.1:$((MULTIPORT+1))|" \
   "$CONFIG" > "$MULTICFG"
 "$DECK" serve -config "$MULTICFG" > "$STATE_DIR/multi-deck.log" 2>&1 &
 MULTIDECK=$!
@@ -245,14 +245,35 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/entries/alpha/c
   -H 'Content-Type: application/json' -d '{"script":"/nope/missing.sh"}')
 [ "$code" = "400" ]; ck "entry config refuses a missing script" $?
 
-# 25. lock (was "pin"): keeps the model alive and is persisted
+# 25. lock (was "pin"): keeps the model warm and is persisted
 lk=$(curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
   -d '{"locked":true}')
-[ "$(jget "$lk" "d['locked']")" = "True" ]; ck "POST /lock locks the entry" $?
-grep -q "pinned: true" "$CONFIG"; ck "lock is persisted in the YAML" $?
+[ "$(jget "$lk" "d['locked']")" = "True" ]; ck "POST /lock keeps the entry warm" $?
+grep -q "pinned: true" "$CONFIG"; ck "the warm flag is persisted in the YAML" $?
 lk=$(curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
   -d '{"locked":false}')
-[ "$(jget "$lk" "d['locked']")" = "False" ]; ck "POST /lock unlocks the entry" $?
+[ "$(jget "$lk" "d['locked']")" = "False" ]; ck "POST /lock stops keeping the entry warm" $?
+
+# 25b. a warm model still yields to a request that needs the room
+#      alpha and gamma share port 21001: locking alpha must not stop gamma
+#      from starting (the request wins over keeping a model warm).
+chat alpha >/dev/null
+[ "$(state_of alpha)" = "ready" ]; ck "alpha is ready before the lock" $?
+curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
+  -d '{"locked":true}' >/dev/null
+out=$(chat gamma)
+[ "$(jget "$out" "d['choices'][0]['message']['content']")" = "hello from gamma" ]
+ck "a warm model still lets a new request through" $?
+[ "$(state_of gamma)" = "ready" ]; ck "gamma is ready (the warm model gave way)" $?
+[ "$(state_of alpha)" = "stopped" ]; ck "the warm model was released to make room" $?
+curl -s -X POST "$BASE/api/entries/alpha/lock" -H 'Content-Type: application/json' \
+  -d '{"locked":false}' >/dev/null
+
+# 25c. the WebUI lock button must read the state it is given, or the model
+#      could be locked but never unlocked again.
+html=$(curl -s "$BASE/static/app.js")
+echo "$html" | grep -q "r.locked = !!e.pinned"; ck "the WebUI lock button reads the lock state" $?
+echo "$html" | grep -q "lockRow(refs.id, !refs.locked)"; ck "the WebUI lock button toggles" $?
 
 # 26. reset clears a failed state
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/entries/alpha/reset")
@@ -268,9 +289,42 @@ print(len(d.get('host',{}).get('urls',[])))
 
 # 28. the WebUI ships the new editor / lock / clear controls
 html=$(curl -s "$BASE/static/app.js")
-echo "$html" | grep -q "edsave_run"; ck "WebUI ships the entry editor" $?
+echo "$html" | grep -q "ed_yaml"; ck "WebUI ships the YAML editor" $?
 echo "$html" | grep -q "lockRow"; ck "WebUI ships the lock button" $?
 echo "$html" | grep -q "eventclear"; ck "WebUI ships the events clear button" $?
+echo "$html" | grep -q "reloadConfig"; ck "WebUI ships the reload button" $?
+# the clone button is gone from the UI: cloning belongs in the terminal
+echo "$html" | grep -q "cloneRow"; [ $? -ne 0 ]; ck "the clone button is gone from the WebUI" $?
+
+# 29. the YAML editor: read one entry as YAML and write it back
+y=$(curl -s "$BASE/api/entries/beta/yaml")
+echo "$y" | grep -q '"yaml"'; ck "GET /api/entries/<id>/yaml returns YAML" $?
+echo "$y" | grep -q "id: beta"; ck "the YAML holds the entry" $?
+y2=$(printf '%s' "$y" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+d['yaml']=d['yaml'].replace('name: Beta','name: Beta edited')
+print(json.dumps(d))
+")
+saved=$(curl -s -X POST "$BASE/api/entries/beta/yaml" -H 'Content-Type: application/json' -d "$y2")
+echo "$saved" | grep -q "Beta edited"; ck "POST /api/entries/<id>/yaml saves the entry" $?
+grep -q "Beta edited" "$CONFIG"; ck "the YAML edit is persisted in the file" $?
+# a typo in a field name must be refused, not silently dropped
+bad=$(curl -s -X POST "$BASE/api/entries/beta/yaml" -H 'Content-Type: application/json' \
+  -d '{"yaml":"id: beta\nprot: 12345\n"}')
+echo "$bad" | grep -qi "invalid yaml"; ck "a typo in the YAML is refused" $?
+
+# 30. reload: the config file is re-read without restarting the deck
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/config/reload")
+[ "$code" = "200" ]; ck "POST /api/config/reload reloads the config" $?
+rl=$(curl -s -X POST "$BASE/api/config/reload")
+[ "$(jget "$rl" "d['reloaded']")" = "True" ]; ck "the reload answers" $?
+
+# 31. deck clone copies an entry under a new id
+curl -s -X DELETE "$BASE/api/entries/beta-copy" >/dev/null   # a leftover from an earlier run
+cl2=$("$DECK" clone -config "$CONFIG" beta beta-copy --name "Beta copy" 2>/dev/null)
+echo "$cl2" | grep -q "cloned beta"; ck "deck clone copies an entry" $?
+curl -s "$BASE/api/status" | grep -q '"beta-copy"'; ck "the clone shows up in the status" $?
 
 echo
 echo "== $pass passed, $fail failed =="

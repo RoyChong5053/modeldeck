@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -76,6 +77,8 @@ func main() {
 		runPreset(cfgPath, rest)
 	case "start", "stop", "restart":
 		runControl(cfgPath, cmd, rest)
+	case "clone":
+		runClone(cfgPath, rest)
 	case "env":
 		runEnv(cfgPath, rest)
 	case "token":
@@ -101,6 +104,7 @@ Usage:
                                          discover scripts and draft entries
   deck preset   <id>                     show an entry's parsed script preset
   deck start|stop|restart <id>           control one entry on a running deck
+  deck clone    <id> <new-id> [--name N]  copy an entry under a new id
   deck env      <id>                     print client env for one entry
   deck token                              print the access token + one-api channel snippet
   deck version
@@ -465,6 +469,55 @@ func runControl(cfgPath, action string, rest []string) {
 	fmt.Printf("%s %s: %s\n", action, id, strings.TrimSpace(string(body)))
 }
 
+// runClone copies an entry under a new id. The copy keeps the script, the
+// port and the flags, so it lands in the same lane as the original: the two
+// cannot run at the same time, exactly like two copies of the same model.
+//
+// The copy is written by the running deck, so the config file and the deck
+// stay in step.
+func runClone(cfgPath string, rest []string) {
+	if len(rest) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: deck clone <id> <new-id> [--name NAME]")
+		os.Exit(2)
+	}
+	src, newID := rest[0], rest[1]
+	name := ""
+	for i := 2; i < len(rest); i++ {
+		switch {
+		case rest[i] == "--name" || rest[i] == "-n":
+			if i+1 < len(rest) {
+				name = rest[i+1]
+				i++
+			}
+		case strings.HasPrefix(rest[i], "--name="):
+			name = strings.TrimPrefix(rest[i], "--name=")
+		}
+	}
+	if newID == "" {
+		fmt.Fprintln(os.Stderr, "the new id must not be empty")
+		os.Exit(2)
+	}
+	cfg := loadConfig(cfgPath)
+	body := map[string]any{"clone_of": src, "id": newID}
+	if name != "" {
+		body["name"] = name
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		fatal(err)
+	}
+	base := controlBase(cfg)
+	url := base + "/api/entries"
+	out, err := httpDo(cfg, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("cloned %s → %s\n", src, newID)
+	fmt.Printf("  %s\n", strings.TrimSpace(string(out)))
+	fmt.Println("note: the copy shares the port with the original, so only one of them runs at a time.")
+}
+
 func runEnv(cfgPath string, rest []string) {
 	if len(rest) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: deck env <id>")
@@ -530,30 +583,30 @@ func runToken(cfgPath string, rest []string) {
 		}
 	}
 	if tok == "" {
-		tok = "(未设置令牌：任何人都能访问 /api /v1 /run)"
+		tok = "(no token set: anyone can reach /api /v1 /run)"
 	}
 
 	fmt.Printf("token      : %s\n", tok)
 	if src != "" {
-		fmt.Printf("来源       : %s\n", src)
+		fmt.Printf("source     : %s\n", src)
 	}
 	if envPath != "" {
-		fmt.Printf("令牌文件   : %s\n", envPath)
+		fmt.Printf("token file : %s\n", envPath)
 	}
-	fmt.Printf("本机 base   : %s\n", controlBase(cfg))
+	fmt.Printf("local base : %s\n", controlBase(cfg))
 	lan := lanBase(cfg)
-	fmt.Printf("局域网 base : %s   ← 填到 one-api 渠道\n", lan)
+	fmt.Printf("lan base   : %s   <- put this in the one-api channel\n", lan)
 	for _, u := range webURLs(cfg, realTok) {
 		fmt.Printf("webui      : %s\n", u)
 	}
 	fmt.Println()
-	fmt.Println("one-api 渠道（新建渠道时填这些）:")
-	fmt.Printf("  类型     : OpenAI\n")
+	fmt.Println("one-api channel (fill these in when adding a channel):")
+	fmt.Printf("  Type     : OpenAI\n")
 	fmt.Printf("  Base URL : %s\n", lan)
-	fmt.Printf("  密钥     : %s\n", realTok)
-	fmt.Printf("  模型     : %s\n", modelNames(cfg))
+	fmt.Printf("  Key      : %s\n", realTok)
+	fmt.Printf("  Models   : %s\n", modelNames(cfg))
 	fmt.Println()
-	fmt.Println("客户端直连（在本机跑时）:")
+	fmt.Println("client, talking to this deck directly:")
 	fmt.Printf("  OPENAI_BASE_URL=%s/v1\n", controlBase(cfg))
 	fmt.Printf("  OPENAI_API_KEY=%s\n", realTok)
 }
@@ -580,7 +633,8 @@ func ensureEnvFile(cfg *config.Config) (string, string, error) {
 		tok = "deck-" + hex.EncodeToString(buf)
 	}
 	content := "# modeldeck access token — this device\n" +
-		"# 复制这个文件到新设备即可复用同一令牌；one-api 渠道的「密钥」填 DECK_TOKEN 的值。\n" +
+		"# Copy this file to another device to reuse the same token.\n" +
+		"# For a one-api channel, put the DECK_TOKEN value in the key field.\n" +
 		"DECK_TOKEN=" + tok + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", "", err
@@ -598,10 +652,10 @@ func modelNames(cfg *config.Config) string {
 		names = append(names, e.ID)
 	}
 	if len(names) == 0 {
-		return "(无)"
+		return "(none)"
 	}
 	if len(names) > 12 {
-		return strings.Join(names[:12], ", ") + fmt.Sprintf(" … 共 %d 个", len(names))
+		return strings.Join(names[:12], ", ") + fmt.Sprintf(" … %d in total", len(names))
 	}
 	return strings.Join(names, ", ")
 }
@@ -820,8 +874,8 @@ func httpDo(cfg *config.Config, method, url string, body io.Reader) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Server.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Server.Token)
+	if tok := accessToken(cfg); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	cl := &http.Client{Timeout: 30 * time.Second}
 	resp, err := cl.Do(req)
@@ -834,6 +888,20 @@ func httpDo(cfg *config.Config, method, url string, body io.Reader) ([]byte, err
 		return b, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return b, nil
+}
+
+// accessToken is the token the CLI uses to talk to the deck. The token of a
+// device lives in the project folder's .env, and the deck process usually
+// got it from there — so the CLI reads it from there too when the config file
+// itself does not carry it.
+func accessToken(cfg *config.Config) string {
+	if tok := cfg.Server.Token; tok != "" {
+		return tok
+	}
+	if tok, _ := config.EnvFileToken(); tok != "" {
+		return tok
+	}
+	return ""
 }
 
 func fatal(err error) {

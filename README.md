@@ -17,7 +17,7 @@ live in [`docs/DEPLOY.md`](docs/DEPLOY.md).**
 
 **P0 + early P1** — scheduler, data plane, control API, WebUI dashboard, first-run config
 bootstrap (`deck init` / `start.sh`), and entry management (discovery, read-only presets,
-rename/clone/trash with live config write-back). Validated by a 39-check smoke suite
+rename/clone/trash with live config write-back). Validated by a 73-check smoke suite
 (`testdata/smoke.sh`) and against a real backend (`~/LLM/jina-v5-embed-CPU.sh`). See
 [`docs/PLAN.md`](docs/PLAN.md) for the full plan and roadmap (P1–P3).
 
@@ -111,8 +111,8 @@ Do it by hand if you prefer:
 ```
 
 Open <http://127.0.0.1:12688> for the dashboard: start/stop/restart, live logs, resources,
-script discovery (**Discover**), an inline **editor** for the start script, **lock**, and
-**rename / clone / trash**. The deck binds every interface, so the same dashboard opens
+script discovery (**Discover**), a plain-text **editor** for a model's YAML, **lock**, and
+**rename / trash**. The deck binds every interface, so the same dashboard opens
 from a phone on the LAN or over Tailscale — the startup banner prints the addresses.
 
 Point a client at the same port:
@@ -186,12 +186,14 @@ Three layers, all UI/API-configurable:
 2. **Resource — measured budgets.** VRAM is sampled via `nvidia-smi`, RAM via
    `/proc`. Peaks measured on the first run feed back into `resources` (unless
    `manual_resources: true`). `budgets.*_reserve_mb` is kept free.
-3. **Soft — preferences.** `priority` (lower evicted first), `pinned` (never evicted),
-   `evictable`, `together_with`.
+3. **Soft — preferences.** `priority` (lower evicted first), `pinned` (kept warm: not
+   unloaded while idle, but released when a request needs the room), `evictable`
+   (`false` = never evicted), `together_with`.
 
 When a request needs memory that a *busy* entry holds, the request **waits** (FIFO queue
-up to `queue_timeout`) instead of interrupting the in-flight request. Only idle, evictable,
-non-pinned entries are evicted. `on_no_fit: reject` returns `503` immediately instead.
+up to `queue_timeout`) instead of interrupting the in-flight request. Only idle, evictable
+entries are evicted — a locked one only after the ordinary idle models are gone.
+`on_no_fit: reject` returns `503` immediately instead.
 
 `budgets.serialize_unknown_gpu` (default `true`) keeps two GPU entries whose memory has not
 been measured from starting together, so a first run cannot over-commit a small card. Once a
@@ -209,23 +211,43 @@ children from a previous run (matched by `DECK_ENTRY`/`DECK_PID`).
 ## Managing variants
 
 Model identity is the entry `id` (plus any `aliases`). Variants are short-lived, so all of
-this is live — no restart, and the config file is rewritten atomically (a `.bak` is kept):
+this is live — no restart, and the config file is rewritten atomically (a `.bak` is kept).
+Only the part that really changed is rewritten: hand-written comments in the config file
+survive a save.
 
-- **rename** (`改名`): changes the id and/or display name. The old id stays as an alias, so
+- **rename**: changes the id and/or display name. The old id stays as an alias, so
   existing clients keep working.
-- **clone** (克隆): copies an entry (same script/port/flags) under a new id.
-- **trash** (删除): removes the entry from the config and writes it to
+- **trash** (Delete): removes the entry from the config and writes it to
   `<state_dir>/trash/<timestamp>-<id>.yaml` before dropping it.
-- **edit** (编辑): change the start script, port, args, env, ready path and idle TTL right
-  in the browser and save it back to the config. The script's own `--port` is picked up
-  automatically; a script path that does not exist is refused. Save-and-start tries it
-  immediately — no YAML editing, no restart.
-- **lock** (🔒 锁定): a locked entry is never unloaded by the idle reaper and never evicted
-  to make room for another model. Useful while testing a model you do not want to pay the
-  cold-start latency for. The flag is stored in the config and survives restarts.
+- **edit**: opens the YAML of that one entry in a plain text box — the same text that sits
+  in the config file, so it is edited the way you would edit it with `nano`. A field name
+  that does not exist is refused instead of being silently dropped, and a script path that
+  does not exist is refused. *Save & run* applies it and restarts the model.
+- **lock** (🔒): keeps the model *warm*. A locked entry is not unloaded while it is idle,
+  so it does not have to be read from disk again. It is **not** a promise that the model
+  stays in memory: when a request comes in and the VRAM/RAM does not fit, the locked
+  model is released to make room — the request always wins over keeping a model warm. The
+  flag is stored in the config and survives restarts. For a model that must never be
+  dropped, use `evictable: false` in the config instead.
+- **clone**: copies an entry (same script/port/flags) under a new id. It lives in the
+  terminal, not in the WebUI: `deck clone <id> <new-id> [--name NAME]`. The copy shares
+  the port with the original, so only one of the two runs at a time.
 
 The script file is never rewritten: these actions change deck's own config, not the
 launcher on disk.
+
+### Editing the config by hand
+
+The config file is a normal YAML file and deck reads it back on demand:
+
+```sh
+nano ~/.config/modeldeck/entries.yaml     # edit it
+```
+
+Press **Reload** in the WebUI (or `curl -X POST /api/config/reload`) and the running deck
+picks the file up — the models that are running keep running, only entries that vanished
+from the file are stopped. A file that does not parse is refused with the YAML error, and
+the deck keeps the configuration it had.
 
 ## Discovery
 
@@ -257,8 +279,12 @@ DELETE /api/entries/{id}                   # move to state_dir/trash
 GET    /api/scan?dir=A&dir=B               # discover scripts + draft entries
 GET    /api/entries/{id}/config            # editable config + parsed script info
 POST   /api/entries/{id}/config            # edit script/port/args/env/ttl/ready_path
+GET    /api/entries/{id}/yaml              # the entry as YAML text (the editor)
+POST   /api/entries/{id}/yaml              # {"yaml": "..."} — replace the entry
+GET    /api/config                         # the whole config file as text
+POST   /api/config/reload                  # re-read the config file from disk
 POST   /api/entries/{id}/start|stop|restart [?async=1]
-POST   /api/entries/{id}/lock              {"locked": true}   # never idle-unload / evict
+POST   /api/entries/{id}/lock              {"locked": true}   # keep warm (idle-proof)
 POST   /api/entries/{id}/reset             # clear a stale "failed" state
 POST   /api/entries/{id}/ttl               {"ttl": 900}
 GET    /api/entries/{id}/logs?tail=200
@@ -299,8 +325,9 @@ entries:
 
 ```sh
 ./deck serve -config testdata/entries.test.yaml &
-bash testdata/smoke.sh     # 33 checks: routing, lanes, coexistence, TTL, port refusal,
-                           # multipart, GPU-serialize, discovery, preset, clone, rename, trash
+bash testdata/smoke.sh     # 73 checks: routing, lanes, coexistence, TTL, port refusal,
+                           # multipart, GPU-serialize, discovery, preset, clone, rename, trash,
+                           # lock (keeps warm, and yields to a request), YAML editor, reload
 ```
 
 The smoke suite mutates the config, so run it against a throwaway copy (the helper

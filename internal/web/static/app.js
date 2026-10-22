@@ -38,12 +38,17 @@ async function api(method, path, body) {
   try {
     r = await fetch(path, opt);
   } catch (e) {
-    return { ok: false, status: 0, data: { error: { message: "无法连接 deck: " + e.message } } };
+    return { ok: false, status: 0, data: { error: { message: "cannot reach deck: " + e.message } } };
   }
   const text = await r.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
   return { ok: r.ok, status: r.status, data };
+}
+
+// errMsg pulls the human-readable part out of an API error.
+function errMsg(data) {
+  return (data && data.error && data.error.message) || (data && data.raw) || "";
 }
 
 function fmtKB(kb) {
@@ -95,6 +100,8 @@ const tail = (p) => (p || "").split("/").pop();
 const rows = new Map();
 
 function cell(label) { const d = document.createElement("td"); if (label) d.dataset.label = label; return d; }
+// a cell that holds a number: it must never be broken across lines
+function numCell(label) { const d = cell(label); d.className = "num"; return d; }
 function td(v) { const d = document.createElement("td"); d.textContent = v; return d; }
 function button(label, cls, fn) {
   const b = document.createElement("button");
@@ -109,28 +116,28 @@ function makeRow() {
   const refs = {};
 
   refs.name = cell(); refs.name.dataset.name = "1";
-  refs.state = cell("状态");
-  refs.port = cell("端口");
-  refs.inflight = cell("在飞");
-  refs.rss = cell("RSS");
-  refs.vram = cell("VRAM");
-  refs.idle = cell("空闲");
+  refs.state = cell("State");
+  refs.port = numCell("Port");
+  refs.inflight = numCell("Inflight");
+  refs.rss = numCell("RSS");
+  refs.vram = numCell("VRAM");
+  refs.idle = numCell("Idle");
 
-  const act = cell("操作");
+  const act = cell("Actions");
   act.dataset.actions = "1";
   const box = document.createElement("div");
   box.className = "actions";
-  refs.start = button("启动", "primary", () => actRow(refs.id, "start"));
-  refs.stop = button("停止", "", () => actRow(refs.id, "stop"));
-  refs.restart = button("重启", "", () => actRow(refs.id, "restart"));
-  refs.lock = button("🔒 锁定", "", () => lockRow(refs.id, !refs.locked));
-  refs.edit = button("编辑", "ghost", () => editRow(refs.id));
-  refs.logs = button("日志", "ghost", () => openLog(refs.id));
-  refs.rename = button("改名", "ghost", () => renameRow(refs.id, refs.title));
-  refs.clone = button("克隆", "ghost", () => cloneRow(refs.id));
-  refs.del = button("删除", "danger", () => deleteRow(refs.id));
+  refs.start = button("Start", "primary", () => actRow(refs.id, "start"));
+  refs.stop = button("Stop", "", () => actRow(refs.id, "stop"));
+  refs.restart = button("Restart", "", () => actRow(refs.id, "restart"));
+  refs.lock = button("Lock", "", () => lockRow(refs.id, !refs.locked));
+  refs.edit = button("Edit", "ghost", () => editRow(refs.id));
+  refs.logs = button("Logs", "ghost", () => openLog(refs.id));
+  refs.rename = button("Rename", "ghost", () => renameRow(refs.id, refs.title));
+  refs.del = button("Delete", "danger", () => deleteRow(refs.id));
+  // two rows of four: a wide row of nine buttons squeezed the table
   box.append(refs.start, refs.stop, refs.restart, refs.lock,
-    refs.edit, refs.logs, refs.rename, refs.clone, refs.del);
+    refs.edit, refs.logs, refs.rename, refs.del);
   act.appendChild(box);
 
   tr.append(refs.name, refs.state, refs.port, refs.inflight, refs.rss, refs.vram, refs.idle, act);
@@ -142,10 +149,14 @@ function updateRow(row, e) {
   row.id = e.id;
   r.id = e.id;
   r.title = e.name || e.id;
+  // the lock state lives on refs: the button reads refs.locked to know what
+  // the next click should do. (It used to be written to row.locked, so the
+  // button always asked to lock and the model could never be unlocked.)
   row.locked = !!e.pinned;
+  r.locked = !!e.pinned;
 
   r.name.innerHTML = `<strong>${e.name || e.id}</strong>` +
-    (e.pinned ? ' <span class="lockbadge" title="已锁定：不会被自动卸载，也不会被其它模型挤掉">🔒</span>' : "") +
+    (e.pinned ? ' <span class="lockbadge" title="Kept warm: not unloaded while idle. A request that does not fit in VRAM/RAM still wins.">🔒</span>' : "") +
     `<div class="muted" style="font-size:12px">${e.id}` +
     ((e.aliases && e.aliases.length) ? " · " + e.aliases.join(", ") : "") + `</div>`;
 
@@ -162,10 +173,11 @@ function updateRow(row, e) {
   r.start.disabled = running;
   r.stop.disabled = !running;
   r.restart.disabled = !running;
-  r.lock.textContent = e.pinned ? "🔓 已锁定" : "🔒 锁定";
+  // the button shows the action it will perform
+  r.lock.textContent = e.pinned ? "Unlock" : "Lock";
   r.lock.title = e.pinned
-    ? "已锁定：空闲也不会被自动卸载，也不会被其它模型挤掉（点一下解锁）"
-    : "锁定：空闲也不会被自动卸载，也不会被其它模型挤掉";
+    ? "Kept warm: not unloaded while idle, so it does not have to be reloaded from disk. If a request does not fit in VRAM/RAM, this model is released anyway (click to unlock)"
+    : "Keep warm: do not unload this model while it is idle";
 }
 
 function renderEntries(entries) {
@@ -192,7 +204,7 @@ function renderEntries(entries) {
       c.className = "muted";
       c.style.textAlign = "center";
       c.style.padding = "18px 12px";
-      c.textContent = "没有条目";
+      c.textContent = "No entries";
       empty.appendChild(c);
       tb.appendChild(empty);
     }
@@ -210,21 +222,21 @@ function renderOps(entries) {
   for (const e of entries) {
     if (e.state === "ready") { online++; inflight += (e.inflight || 0); }
     if (e.state === "starting") {
-      ops.push(`<span class="op starting"><span class="spin">◠</span><span class="who">${e.id}</span>启动中 ${fmtIdle(e.started_at)}</span>`);
+      ops.push(`<span class="op starting"><span class="spin">◠</span><span class="who">${e.id}</span>starting ${fmtIdle(e.started_at)}</span>`);
     } else if (e.state === "stopping") {
-      ops.push(`<span class="op stopping"><span class="spin">◠</span><span class="who">${e.id}</span>停止中</span>`);
+      ops.push(`<span class="op stopping"><span class="spin">◠</span><span class="who">${e.id}</span>stopping</span>`);
     } else if (e.state === "failed") {
-      ops.push(`<span class="op failed"><span class="who">${e.id}</span>启动失败` +
-        `<button class="opx" data-reset="${e.id}" title="清除失败状态">✕</button></span>`);
+      ops.push(`<span class="op failed"><span class="who">${e.id}</span>failed to start` +
+        `<button class="opx" data-reset="${e.id}" title="Clear the failed state">✕</button></span>`);
     } else if (e.state === "ready" && e.inflight > 0) {
-      ops.push(`<span class="op serving"><span class="who">${e.id}</span>${e.inflight} 个请求在飞</span>`);
+      ops.push(`<span class="op serving"><span class="who">${e.id}</span>${e.inflight} request(s) in flight</span>`);
     }
   }
   el.innerHTML = ops.join("");
-  const parts = [`${online} 个模型在线`];
-  if (inflight) parts.push(`${inflight} 个请求在飞`);
-  if (ops.length) parts.push(`${ops.length} 项进行中`);
-  else parts.push("空闲");
+  const parts = [`${online} model(s) online`];
+  if (inflight) parts.push(`${inflight} request(s) in flight`);
+  if (ops.length) parts.push(`${ops.length} in progress`);
+  else parts.push("idle");
   $("opsinfo").textContent = parts.join(" · ");
 }
 
@@ -262,6 +274,10 @@ function renderDashboard(host, budgets, entries) {
 
   const gpuHeat = g.ok ? (g.used_mb > g.total_mb * 0.9 ? "hot" : (g.used_mb > g.total_mb * 0.75 ? "warm" : "")) : "";
   const memHeat = m.total_mb ? (m.available_mb / m.total_mb < 0.1 ? "hot" : "") : "";
+  // the load average says how many runnable threads there are; divided by the
+  // core count that is the share of the machine that is busy
+  const cpuPct = c.cores ? Math.min(100, ((c.load1 || 0) / c.cores) * 100) : 0;
+  const cpuHeat = cpuPct > 85 ? "hot" : (cpuPct > 65 ? "warm" : "");
 
   // The addresses other machines can open. With a wildcard bind this is every
   // local address — LAN plus Tailscale — so a phone can be handed a link that
@@ -272,19 +288,19 @@ function renderDashboard(host, budgets, entries) {
 
   // phone strip: one row of chips that wraps instead of scrolling sideways
   const strip = [
-    `<span class="s"><b>主机</b>${short(name, 16)}${showLabel ? " · " + short(h.label, 12) : ""}</span>`,
+    `<span class="s"><b>Host</b>${short(name, 16)}${showLabel ? " · " + short(h.label, 12) : ""}</span>`,
     g.ok ? `<span class="s ${gpuHeat}"><b>GPU</b>${fmtMB(g.used_mb)}/${fmtMB(g.total_mb)} · ${g.util_pct || 0}%</span>` : "",
-    `<span class="s"><b>CPU</b>${(c.load1 || 0).toFixed(2)} · ${c.cores || "?"}核</span>`,
+    `<span class="s ${cpuHeat}"><b>CPU</b>${(c.load1 || 0).toFixed(2)} · ${c.cores || "?"} cores</span>`,
     `<span class="s ${memHeat}"><b>RAM</b>${fmtMB(m.used_mb)}/${fmtMB(m.total_mb)}</span>`,
-    `<span class="s"><b>模型</b>${online} 在线</span>`,
-    `<span class="s"><b>预留</b>${fmtMB(b.vram_reserve_mb)} VRAM</span>`,
-    `<span class="s"><b>策略</b>${b.on_no_fit === "reject" ? "拒绝" : "排队"} · ${b.queue_timeout ?? "—"}s</span>`,
-    urls.length ? `<span class="s"><b>地址</b>${short(urls[0].replace(/^https?:\/\//, ""), 30)}</span>` : "",
+    `<span class="s"><b>Models</b>${online} online</span>`,
+    `<span class="s"><b>Reserve</b>${fmtMB(b.vram_reserve_mb)} VRAM</span>`,
+    `<span class="s"><b>Policy</b>${b.on_no_fit === "reject" ? "reject" : "queue"} · ${b.queue_timeout ?? "—"}s</span>`,
+    urls.length ? `<span class="s"><b>Address</b>${short(urls[0].replace(/^https?:\/\//, ""), 30)}</span>` : "",
   ].filter(Boolean).join("");
   $("dashstrip").innerHTML = strip;
 
-  cards.push(kv("主机", short(name, 18), {
-    sub: `${h.version ? "v" + h.version : ""} · 运行 ${fmtUptime(h.uptime_s)}`,
+  cards.push(kv("Host", short(name, 18), {
+    sub: `${h.version ? "v" + h.version : ""} · up ${fmtUptime(h.uptime_s)}`,
     wide: false,
   }));
 
@@ -297,27 +313,29 @@ function renderDashboard(host, budgets, entries) {
       title: g.name || "",
     }));
   } else {
-    cards.push(kv("GPU", "无", { sub: "未检测到 nvidia-smi" }));
+    cards.push(kv("GPU", "none", { sub: "nvidia-smi not found" }));
   }
 
   cards.push(kv("CPU", short(c.model || "?", 20), {
-    sub: `${c.cores || "?"} 核 · 负载 ${(c.load1 || 0).toFixed(2)}`,
+    sub: `${c.cores || "?"} cores · load ${(c.load1 || 0).toFixed(2)} (${Math.round(cpuPct)}%)`,
+    pct: cpuPct,
+    heat: cpuHeat,
     title: c.model || "",
   }));
 
-  cards.push(kv("内存", `${fmtMB(m.used_mb)} / ${fmtMB(m.total_mb)}`, {
-    sub: `可用 ${fmtMB(m.available_mb)}`,
+  cards.push(kv("Memory", `${fmtMB(m.used_mb)} / ${fmtMB(m.total_mb)}`, {
+    sub: `${fmtMB(m.available_mb)} available`,
     pct: m.total_mb ? (m.used_mb / m.total_mb) * 100 : 0,
-    heat: m.total_mb ? (m.available_mb / m.total_mb < 0.1 ? "hot" : "") : "",
+    heat: memHeat,
   }));
 
-  cards.push(kv("运行中", `${online} 个模型`, {
-    sub: `并发启动上限 ${b.max_starting ?? "—"} · 默认 TTL ${b.ttl_default ?? "—"}s`,
+  cards.push(kv("Running", `${online} model(s)`, {
+    sub: `max starting ${b.max_starting ?? "—"} · default TTL ${b.ttl_default ?? "—"}s`,
   }));
 
-  cards.push(kv("显存预留", fmtMB0(b.vram_reserve_mb), { sub: `RAM 预留 ${fmtMB0(b.ram_reserve_mb)}` }));
-  cards.push(kv("预算不足", b.on_no_fit === "reject" ? "立即拒绝" : "排队等待", {
-    sub: `排队超时 ${b.queue_timeout ?? "—"}s`,
+  cards.push(kv("VRAM reserve", fmtMB0(b.vram_reserve_mb), { sub: `RAM reserve ${fmtMB0(b.ram_reserve_mb)}` }));
+  cards.push(kv("No room", b.on_no_fit === "reject" ? "reject" : "queue", {
+    sub: `queue timeout ${b.queue_timeout ?? "—"}s`,
   }));
 
   // The addresses other machines can open, with the token so a tap on a
@@ -328,8 +346,8 @@ function renderDashboard(host, budgets, entries) {
         const href = u + (t ? (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t) : "");
         return `<a href="${href}" target="_blank" rel="noreferrer">${u.replace(/^https?:\/\//, "")}</a>`;
       }).join("")
-    : `<span class="muted">只有回环地址，别处的设备打不开</span>`;
-  cards.push(`<div class="kv wide"><div class="k">地址</div><div class="urls">${linkHTML}</div></div>`);
+    : `<span class="muted">loopback only — no other device can reach it</span>`;
+  cards.push(`<div class="kv wide"><div class="k">Addresses</div><div class="urls">${linkHTML}</div></div>`);
 
   $("dash").innerHTML = cards.join("");
   $("dashinfo").textContent = `${h.listen || ""}`;
@@ -339,166 +357,132 @@ function renderDashboard(host, budgets, entries) {
 async function actRow(id, action) {
   log(`${action} ${id} …`);
   const { ok, status, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/${action}?async=1`);
-  if (!ok) log(`${action} ${id} 失败: ${(data.error && data.error.message) || data.raw || ("HTTP " + status)}`);
-  else log(`${action} ${id} 已受理`);
+  if (!ok) log(`${action} ${id} failed: ${errMsg(data) || ("HTTP " + status)}`);
+  else log(`${action} ${id} accepted`);
   setTimeout(refresh, 300);
 }
 
-// lockRow locks an entry in place: it is never unloaded by the idle reaper
-// and never evicted to make room for another model.
+// lockRow keeps an entry warm: it is not unloaded while it is idle, so it does
+// not have to be reloaded from disk. It is not a promise that the model stays
+// in memory: when a request does not fit in VRAM/RAM, the locked model is
+// released to make room.
 async function lockRow(id, locked) {
   const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/lock`, { locked });
-  if (!ok) log(`锁定 ${id} 失败: ${(data.error && data.error.message) || ""}`);
-  else log(locked ? `已锁定 ${id}（不会被自动卸载）` : `已解锁 ${id}`);
+  if (!ok) log(`lock ${id} failed: ${errMsg(data)}`);
+  else log(locked ? `kept warm: ${id}` : `no longer kept warm: ${id}`);
   setTimeout(refresh, 200);
 }
 
 // resetRow clears a failed state so the error stops sticking to the entry.
 async function resetRow(id) {
   const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/reset`);
-  if (!ok) log(`清除 ${id} 失败状态失败: ${(data.error && data.error.message) || ""}`);
-  else log(`已清除 ${id} 的失败状态`);
+  if (!ok) log(`clearing the failed state of ${id} failed: ${errMsg(data)}`);
+  else log(`cleared the failed state of ${id}`);
   setTimeout(refresh, 200);
 }
 
 async function renameRow(id, curName) {
-  const name = prompt("新的显示名", curName || id);
+  const name = prompt("New display name", curName || id);
   if (name === null) return;
-  const newID = prompt("新的 id（留空保持不变，旧 id 会保留为别名）", "");
+  const newID = prompt("New id (empty keeps it; the old id stays as an alias)", "");
   if (newID === null) return;
   const body = {};
   if (name !== "") body.name = name;
   if (newID && newID !== id) body.id = newID;
   if (!Object.keys(body).length) return;
   const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(id)}/rename`, body);
-  if (!ok) { log(`改名失败: ${(data.error && data.error.message) || ""}`); return; }
-  log(`已改名 ${id} → ${data.id}`);
+  if (!ok) { log(`rename failed: ${errMsg(data)}`); return; }
+  log(`renamed ${id} → ${data.id}`);
   rows.clear();
   $("entries").querySelector("tbody").innerHTML = "";
   refresh();
 }
 
-async function cloneRow(id) {
-  const newID = prompt("克隆出的新 id", id + "-copy");
-  if (!newID) return;
-  const name = prompt("新显示名（可留空）", "");
-  if (name === null) return;
-  const body = { clone_of: id, id: newID };
-  if (name) body.name = name;
-  const { ok, data } = await api("POST", "/api/entries", body);
-  if (!ok) { log(`克隆失败: ${(data.error && data.error.message) || ""}`); return; }
-  log(`已克隆 ${id} → ${data.id}`);
-  refresh();
-}
-
 async function deleteRow(id) {
-  if (!confirm(`删除 ${id}？\n配置会移入 state/trash 备份，可手动恢复。`)) return;
+  if (!confirm(`Delete ${id}?\nThe config is moved to state/trash and can be restored by hand.`)) return;
   const { ok, data } = await api("DELETE", `/api/entries/${encodeURIComponent(id)}`);
-  if (!ok) { log(`删除失败: ${(data.error && data.error.message) || ""}`); return; }
-  log(`已删除 ${id}（已入回收站）`);
+  if (!ok) { log(`delete failed: ${errMsg(data)}`); return; }
+  log(`deleted ${id} (moved to the trash)`);
   rows.delete(id);
   refresh();
 }
 
-// ---- edit an entry: the start script and the knobs around it --------------
-// Editing the script here and pressing 启动 on the same screen is the
-// shortest path from "I wrote a new launcher" to "it runs".
+// ---- edit an entry: the YAML of that entry, plain text --------------------
+// The editor is the config file and nothing else: the same YAML a person
+// would type in nano, one entry at a time.
 let editID = null;
 
 async function editRow(id) {
-  const { ok, data } = await api("GET", `/api/entries/${encodeURIComponent(id)}/config`);
-  if (!ok) { log(`读取配置失败: ${(data.error && data.error.message) || ""}`); return; }
+  const { ok, data } = await api("GET", `/api/entries/${encodeURIComponent(id)}/yaml`);
+  if (!ok) { log(`reading ${id} failed: ${errMsg(data)}`); return; }
   editID = id;
-  $("edittitle").textContent = "编辑 · " + id;
-  $("ed_script").value = data.script || "";
-  $("ed_name").value = data.name || "";
-  $("ed_port").value = data.port || "";
-  $("ed_ready_path").value = (data.ready && data.ready.path) || "/health";
-  $("ed_args").value = (data.args || []).join("\n");
-  $("ed_env").value = (data.env || []).join("\n");
-  $("ed_ttl").value = (data.ttl === undefined || data.ttl === null) ? "" : data.ttl;
+  $("edittitle").textContent = "edit · " + id;
+  $("ed_yaml").value = data.yaml || "";
+  $("ed_path").textContent = data.path || "";
   $("ed_msg").textContent = "";
-  renderParsed(data.parsed);
   $("editmodal").classList.remove("hidden");
-}
-
-function renderParsed(p) {
-  const el = $("ed_parsed");
-  if (!p) { el.textContent = "（脚本还没写好，解析不了）"; return; }
-  const flags = (p.flags && p.flags.length) ? p.flags.join(", ") : "—";
-  const lines = [
-    `binary     : ${p.binary || "?"}`,
-    `model      : ${p.model || "—"}`,
-    `listen     : ${p.host}:${p.port}  (ready: ${p.ready})`,
-    `placement  : ${p.placement || "—"}`,
-    `flags      : ${flags}`,
-  ];
-  for (const w of (p.warnings || [])) lines.push(`warning    : ${w}`);
-  el.textContent = lines.join("\n");
+  const ta = $("ed_yaml");
+  ta.focus();
+  ta.setSelectionRange(0, 0);
 }
 
 function closeEdit() { $("editmodal").classList.add("hidden"); }
 
 async function saveEdit(andRun) {
   if (!editID) return;
-  const body = {};
-  const script = $("ed_script").value.trim();
-  if (script) body.script = script;
-  const name = $("ed_name").value.trim();
-  body.name = name;
-  const port = parseInt($("ed_port").value, 10);
-  if (port > 0) body.port = port;
-  const readyPath = $("ed_ready_path").value.trim();
-  if (readyPath) body.ready_path = readyPath;
-  const ttlRaw = $("ed_ttl").value.trim();
-  if (ttlRaw !== "") body.ttl = parseInt(ttlRaw, 10);
-  body.args = $("ed_args").value.split("\n").map((s) => s.trim()).filter(Boolean);
-  body.env = $("ed_env").value.split("\n").map((s) => s.trim()).filter(Boolean);
-
-  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(editID)}/config`, body);
+  const body = { yaml: $("ed_yaml").value };
+  const { ok, data } = await api("POST", `/api/entries/${encodeURIComponent(editID)}/yaml`, body);
   if (!ok) {
-    $("ed_msg").textContent = "保存失败: " + ((data.error && data.error.message) || data.raw || ("HTTP " + data.status));
+    $("ed_msg").textContent = "save failed: " + (errMsg(data) || "HTTP " + data.status);
     return;
   }
-  renderParsed(data.parsed);
-  log(`已保存 ${editID}`);
+  $("ed_msg").textContent = "saved";
+  log(`saved ${editID}`);
   refresh();
   if (andRun) {
-    const running = data.running;
     closeEdit();
-    actRow(editID, running ? "restart" : "start");
+    actRow(editID, "restart");
   }
+}
+
+// ---- reload the config from disk ------------------------------------------
+// An edit made in nano only takes effect once the deck reads the file again.
+async function reloadConfig() {
+  const { ok, data } = await api("POST", "/api/config/reload");
+  if (!ok) { log(`reload failed: ${errMsg(data)}`); return; }
+  log(`reloaded ${data.entries} entries from ${data.path}`);
+  refresh();
 }
 
 // ---- discovery ----
 async function doScan() {
-  $("scaninfo").textContent = "扫描中…";
+  $("scaninfo").textContent = "scanning…";
   const { ok, data } = await api("GET", "/api/scan");
-  if (!ok) { $("scaninfo").textContent = "扫描失败"; return; }
+  if (!ok) { $("scaninfo").textContent = "scan failed"; return; }
   const cands = data.candidates || [];
   const found = cands.filter((c) => c.port).length;
-  $("scaninfo").textContent = `${cands.length} 个脚本 · ${found} 个含端口 · ${(data.dirs || []).join(", ")}`;
+  $("scaninfo").textContent = `${cands.length} script(s) · ${found} with a port · ${(data.dirs || []).join(", ")}`;
   renderScan(cands);
 }
 
 function renderScan(cands) {
   const el = $("scanresult");
   el.innerHTML = "";
-  if (!cands.length) { el.innerHTML = '<div class="muted" style="padding:10px 14px">未发现脚本</div>'; return; }
+  if (!cands.length) { el.innerHTML = '<div class="muted" style="padding:10px 14px">No scripts found</div>'; return; }
   const tbl = document.createElement("table");
   tbl.className = "responsive";
-  tbl.innerHTML = "<thead><tr><th>ID</th><th>端口</th><th>位置</th><th>二进制</th><th>脚本</th><th>操作</th></tr></thead>";
+  tbl.innerHTML = "<thead><tr><th>ID</th><th>Port</th><th>Placement</th><th>Binary</th><th>Script</th><th>Actions</th></tr></thead>";
   const tb = document.createElement("tbody");
   for (const c of cands) {
     const tr = document.createElement("tr");
     const cells = [td(c.id), td(c.port || "—"), td(c.placement), td(tail(c.binary) || "?"), td(tail(c.script))];
-    const labels = ["ID", "端口", "位置", "二进制", "脚本"];
+    const labels = ["ID", "Port", "Placement", "Binary", "Script"];
     cells.forEach((c2, i) => { c2.dataset.label = labels[i]; });
     cells[0].dataset.name = "1";
     tr.append(...cells);
-    const act = cell("操作");
+    const act = cell("Actions");
     act.dataset.actions = "1";
-    const b = button(c.configured ? "已导入" : "导入", c.configured ? "" : "primary", () => importCandidate(c));
+    const b = button(c.configured ? "Imported" : "Import", c.configured ? "" : "primary", () => importCandidate(c));
     b.disabled = !!c.configured || !c.port;
     act.appendChild(b);
     if (c.warnings && c.warnings.length) act.title = c.warnings.join("; ");
@@ -515,8 +499,8 @@ async function importCandidate(c) {
     host: c.host, placement: c.placement, tags: ["scanned"],
   };
   const { ok, data } = await api("POST", "/api/entries", body);
-  if (!ok) { log(`导入 ${c.id} 失败: ${(data.error && data.error.message) || ""}`); return; }
-  log(`已导入 ${data.id}`);
+  if (!ok) { log(`importing ${c.id} failed: ${errMsg(data)}`); return; }
+  log(`imported ${data.id}`);
   doScan();
   refresh();
 }
@@ -552,16 +536,16 @@ function copyLink() {
   const urls = (lastHost.urls || []);
   const lan = urls.filter((u) => !/127\.0\.0\.1|localhost|\[::1\]/.test(u));
   const pick = (lan.length ? lan : urls)[0];
-  if (!pick) { log("没有可用的地址"); return; }
+  if (!pick) { log("no usable address"); return; }
   const t = getToken();
   const link = pick + (t ? (pick.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t) : "");
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(link).then(
-      () => log("已复制: " + link),
-      () => log("复制失败，地址是: " + link)
+      () => log("copied: " + link),
+      () => log("copy failed, the address is: " + link)
     );
   } else {
-    log("地址: " + link);
+    log("address: " + link);
   }
 }
 
@@ -591,19 +575,19 @@ async function refresh() {
   if (!ok) {
     dot.className = "dot dead";
     if (status === 401) {
-      showAuthWall("需要访问令牌", "这台 deck 开启了令牌保护，/api 被拒绝。把令牌填进下面即可连接。");
-      $("summary").textContent = "需要令牌";
+      showAuthWall("Access token required", "This deck is protected by a token and /api is refused. Paste the token below to connect.");
+      $("summary").textContent = "token required";
     } else {
-      showAuthWall("无法连接 deck", (data.error && data.error.message) || ("HTTP " + status));
-      $("summary").textContent = "连接失败";
+      showAuthWall("Cannot reach the deck", errMsg(data) || ("HTTP " + status));
+      $("summary").textContent = "connection failed";
     }
     return;
   }
   hideAuthWall();
   dot.className = "dot live";
   const m = data.mem || {}, g = data.gpu || {};
-  let s = `RAM ${fmtMB(m.available_mb)} 可用`;
-  if (g.ok) s += ` · GPU ${fmtMB(g.free_mb)} 空闲`;
+  let s = `RAM ${fmtMB(m.available_mb)} available`;
+  if (g.ok) s += ` · GPU ${fmtMB(g.free_mb)} free`;
   $("summary").textContent = s;
   $("listen").textContent = "listen " + (data.listen || "");
   const entries = data.entries || [];
@@ -627,7 +611,7 @@ function applyToken() {
   if (!t) return;
   setToken(t);
   $("tokeninput").value = "";
-  log("已设置令牌，重新连接…");
+  log("token set, reconnecting…");
   refresh();
 }
 function promptToken() {
@@ -637,6 +621,7 @@ function promptToken() {
 }
 
 $("refresh").onclick = refresh;
+$("reloadbtn").onclick = reloadConfig;
 $("tokenbtn").onclick = promptToken;
 $("tokenok").onclick = applyToken;
 $("tokeninput").addEventListener("keydown", (e) => { if (e.key === "Enter") applyToken(); });

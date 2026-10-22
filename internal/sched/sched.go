@@ -106,6 +106,11 @@ func (s *Scheduler) Acquire(ctx context.Context, e *config.Entry) (*runtime.Runt
 		s.mu.Unlock()
 
 		for _, v := range victims {
+			if v.entry.Pinned {
+				// The model was kept warm on purpose; say so, because it is
+				// being given up to serve this request.
+				fmt.Printf("[sched] released locked %s to make room for %s\n", v.id, e.ID)
+			}
 			_ = s.sup.Stop(v.id)
 			s.mu.Lock()
 			delete(s.reserved, v.id)
@@ -192,6 +197,9 @@ func (s *Scheduler) reap() {
 			continue
 		}
 		e := rt.Entry
+		// A locked entry is never reaped for being idle: that is the whole
+		// point of locking it (no reloading from disk). It is still released
+		// when a request needs the memory — see pickVictim.
 		if e.Pinned || rt.Inflight() > 0 {
 			continue
 		}
@@ -314,6 +322,12 @@ func (s *Scheduler) planLocked(e *config.Entry) ([]occupant, bool, string) {
 	}
 
 	// Hard victims must be stoppable right now.
+	//
+	// A pinned (locked) entry may be released here: locking only means "keep
+	// this model warm so it does not have to be reloaded from disk". A request
+	// that comes in always wins over keeping a model warm, otherwise the deck
+	// would hold VRAM hostage and refuse to serve. Only `evictable: false`
+	// (and an entry that is busy with a request) really blocks the start.
 	for _, o := range occ {
 		if !victim[o.id] {
 			continue
@@ -321,7 +335,7 @@ func (s *Scheduler) planLocked(e *config.Entry) ([]occupant, bool, string) {
 		if o.kind == "starting" || o.kind == "stopping" {
 			return nil, false, fmt.Sprintf("%s is starting or stopping", o.id)
 		}
-		if !o.entry.EvictableOK() || o.entry.Pinned {
+		if !o.entry.EvictableOK() {
 			return nil, false, fmt.Sprintf("%s is not evictable", o.id)
 		}
 		if !o.idle {
@@ -392,7 +406,10 @@ func (s *Scheduler) pickVictim(occ []occupant, victim map[string]bool, e *config
 		if o.kind != "running" || !o.idle {
 			continue
 		}
-		if !o.entry.EvictableOK() || o.entry.Pinned {
+		// A locked (pinned) model is a candidate too — it just ranks lower
+		// than an ordinary idle model, so warming up is given up only when
+		// there is nothing else left to release.
+		if !o.entry.EvictableOK() {
 			continue
 		}
 		if contains(e.TogetherWith, o.id) {
@@ -406,6 +423,9 @@ func (s *Scheduler) pickVictim(occ []occupant, victim map[string]bool, e *config
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].entry.Priority != cands[j].entry.Priority {
 			return cands[i].entry.Priority < cands[j].entry.Priority
+		}
+		if cands[i].entry.Pinned != cands[j].entry.Pinned {
+			return !cands[i].entry.Pinned // unlocked idle models go first
 		}
 		return cands[i].last.Before(cands[j].last)
 	})

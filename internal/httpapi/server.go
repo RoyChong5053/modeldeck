@@ -21,6 +21,8 @@ import (
 	"modeldeck/internal/scan"
 	"modeldeck/internal/sched"
 	"modeldeck/internal/version"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Server wires the control plane, the data plane, and the WebUI onto one port.
@@ -123,6 +125,8 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
 		writeJSON(w, http.StatusOK, s.memPayload())
 	case "scan":
 		s.scanHandler(w, r)
+	case "config":
+		s.configHandler(w, r)
 	case "entries":
 		if len(parts) == 1 {
 			if r.Method == http.MethodPost {
@@ -164,6 +168,8 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, rel string) {
 			s.reset(w, r, id)
 		case "config":
 			s.entryConfig(w, r, id)
+		case "yaml":
+			s.entryYAML(w, r, id)
 		case "ttl":
 			s.setTTL(w, r, id)
 		case "preset":
@@ -309,10 +315,12 @@ func (s *Server) actionTimeout(e *config.Entry) time.Duration {
 	return t + 30*time.Second
 }
 
-// pin locks an entry in place: a locked entry is never unloaded by the idle
-// reaper and never evicted to make room for another model. That is what you
-// want while a model is under test (ASR+TTS, a long generation) and the
-// warm-up cost would show up as latency on every request.
+// pin marks an entry as "keep warm": a locked entry is not unloaded by the
+// idle reaper, so it does not have to be read from disk again. It is not a
+// promise that the model stays in memory: when a request comes in and the
+// VRAM/RAM does not fit, the locked model is released to make room — the
+// request always wins over keeping a model warm. Use `evictable: false` in
+// the config for a model that must never be dropped.
 //
 // The flag is persisted, so it survives a deck restart.
 func (s *Server) pin(w http.ResponseWriter, r *http.Request, id string) {
@@ -438,10 +446,9 @@ func (s *Server) entryConfigPayload(e *config.Entry) entryConfigResp {
 }
 
 // entryConfig reads (GET) or edits (POST) the fields of one entry. Editing
-// the start script here and pressing 启动 in the same screen is the fastest
+// the start script here and pressing Start in the same screen is the fastest
 // way to try a new model without touching a YAML file.
-func (s *Server) entryConfig(w http.ResponseWriter, r *http.Request, id string) {
-	e, ok := s.reg.ByID(id)
+func (s *Server) entryConfig(w http.ResponseWriter, r *http.Request, id string) {	e, ok := s.reg.ByID(id)
 	if !ok {
 		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
 		return
@@ -561,6 +568,189 @@ func (s *Server) entryConfig(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	updated, _ := s.reg.ByID(id)
 	writeJSON(w, http.StatusOK, s.entryConfigPayload(updated))
+}
+
+// entryYAML reads (GET) or writes (POST) one entry as YAML text — the same
+// text that sits in the config file, and the same text a person would edit
+// in nano. It is the plainest possible editor: no form, no field list, just
+// the file.
+func (s *Server) entryYAML(w http.ResponseWriter, r *http.Request, id string) {
+	e, ok := s.reg.ByID(id)
+	if !ok {
+		writeAPIErr(w, http.StatusNotFound, "unknown entry "+id)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		// The text as it stands in the file, comments included: what the
+		// editor shows is what the file holds.
+		text, err := config.EntryYAML(s.cfg.Path, id)
+		if err != nil {
+			b, merr := yaml.Marshal(e)
+			if merr != nil {
+				writeAPIErr(w, http.StatusInternalServerError, merr.Error())
+				return
+			}
+			text = string(b)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": id, "yaml": text, "path": s.cfg.Path,
+		})
+	case http.MethodPost, http.MethodPut:
+		s.saveEntryYAML(w, r, id)
+	default:
+		writeAPIErr(w, http.StatusMethodNotAllowed, "GET or POST required")
+	}
+}
+
+// saveEntryYAML parses the YAML the browser sent, checks it, and puts it back
+// into the config.
+func (s *Server) saveEntryYAML(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.YAML) == "" {
+		writeAPIErr(w, http.StatusBadRequest, "the YAML is empty")
+		return
+	}
+
+	node, parsed, err := config.ParseEntryYAML(body.YAML)
+	if err != nil {
+		writeAPIErr(w, http.StatusBadRequest, "invalid YAML: "+err.Error())
+		return
+	}
+	ne := *parsed
+	if ne.ID == "" {
+		ne.ID = id
+	}
+	if ne.ID != id {
+		writeAPIErr(w, http.StatusBadRequest,
+			"the id cannot be changed here (use Rename), got "+ne.ID)
+		return
+	}
+	if ne.Script == "" {
+		writeAPIErr(w, http.StatusBadRequest, "script is required")
+		return
+	}
+	ne.Script = config.ExpandHome(strings.TrimSpace(ne.Script))
+	if _, err := os.Stat(ne.Script); err != nil {
+		writeAPIErr(w, http.StatusBadRequest, "script not found: "+ne.Script)
+		return
+	}
+	if ne.Mode == "" {
+		ne.Mode = "server"
+	}
+	if ne.Mode == "server" && (ne.Port < 1 || ne.Port > 65535) {
+		writeAPIErr(w, http.StatusBadRequest, "port must be 1..65535")
+		return
+	}
+	if ne.TTL != nil && *ne.TTL < 0 {
+		writeAPIErr(w, http.StatusBadRequest, "ttl must be >= 0")
+		return
+	}
+	switch ne.Ready.Type {
+	case "", "http", "tcp", "log", "sleep", "none":
+	default:
+		writeAPIErr(w, http.StatusBadRequest, "invalid ready.type "+ne.Ready.Type)
+		return
+	}
+
+	// The node keeps the comments that were typed, so they land in the file.
+	raw := map[string]*yaml.Node{id: node}
+	err = s.commitEntriesRaw(func(list []*config.Entry) ([]*config.Entry, error) {
+		for i, x := range list {
+			if x.ID != id {
+				continue
+			}
+			next := append([]*config.Entry(nil), list...)
+			next[i] = ne.Clone()
+			return next, nil
+		}
+		return nil, fmt.Errorf("unknown entry %q", id)
+	}, raw)
+	if err != nil {
+		writeAPIErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	updated, _ := s.reg.ByID(id)
+	b, _ := yaml.Marshal(updated)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": id, "yaml": string(b), "path": s.cfg.Path,
+	})
+}
+
+// configHandler serves the config file itself: GET shows it, POST /reload
+// re-reads it from disk.
+//
+// Reloading is what makes an edit made in nano take effect without restarting
+// the deck. The running models are kept; only entries that disappeared from
+// the file are stopped.
+func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/"), "/")
+	if len(parts) == 2 && parts[1] == "reload" {
+		s.reloadConfig(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeAPIErr(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	path := s.cfg.Path
+	if path == "" {
+		writeAPIErr(w, http.StatusNotFound, "the config path is unknown")
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		writeAPIErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "yaml": string(b)})
+}
+
+// reloadConfig re-reads the config file and swaps it in.
+func (s *Server) reloadConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIErr(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	path := s.cfg.Path
+	if path == "" {
+		writeAPIErr(w, http.StatusNotFound, "the config path is unknown")
+		return
+	}
+	newCfg, err := config.Load(path)
+	if err != nil {
+		writeAPIErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// A token that did not come from the file (it lives in the environment or
+	// in .env) stays in force after a reload. A token that was in the file
+	// and has just been deleted there is gone, as asked.
+	if newCfg.Server.Token == "" && s.cfg.Server.Token != "" && s.cfg.Server.FileToken == "" {
+		newCfg.Server.Token = s.cfg.Server.Token
+		newCfg.Server.TokenSource = s.cfg.Server.TokenSource
+		newCfg.Server.FileToken = ""
+	}
+
+	s.mu.Lock()
+	before := len(s.cfg.Entries)
+	s.cfg.Version = newCfg.Version
+	s.cfg.Server = newCfg.Server
+	s.cfg.Budgets = newCfg.Budgets
+	s.cfg.Entries = newCfg.Entries
+	s.mu.Unlock()
+
+	s.reg.Rebuild(s.cfg)
+	s.sup.SyncRuntimes(s.cfg.Entries)
+	log.Printf("[api] config reloaded from %s: %d entries (was %d)", path, len(newCfg.Entries), before)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reloaded": true, "path": path, "entries": len(newCfg.Entries),
+	})
 }
 
 func (s *Server) setTTL(w http.ResponseWriter, r *http.Request, id string) {
@@ -891,6 +1081,13 @@ func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request, id string) 
 // commitEntries applies a mutation to the entry list, validates, persists, and
 // reloads the registry + supervisor. The mutation receives a copy of the slice.
 func (s *Server) commitEntries(mutate func([]*config.Entry) ([]*config.Entry, error)) error {
+	return s.commitEntriesRaw(mutate, nil)
+}
+
+// commitEntriesRaw is commitEntries with per-entry YAML text that has to go
+// into the file as it was typed (the comments the editor was given, for
+// instance).
+func (s *Server) commitEntriesRaw(mutate func([]*config.Entry) ([]*config.Entry, error), raw map[string]*yaml.Node) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -905,7 +1102,7 @@ func (s *Server) commitEntries(mutate func([]*config.Entry) ([]*config.Entry, er
 		s.cfg.Entries = saved
 		return err
 	}
-	if err := config.Save(s.cfg.Path, s.cfg); err != nil {
+	if err := config.SaveEntriesWith(s.cfg.Path, s.cfg, raw); err != nil {
 		s.cfg.Entries = saved
 		return err
 	}

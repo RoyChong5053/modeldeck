@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -17,24 +17,25 @@
     </div>
     <div id="summary" class="summary">connecting…</div>
     <div class="head-actions">
-      <button id="tokenbtn" class="ghost" title="访问令牌">🔑</button>
-      <button id="fold" class="ghost" title="收起/展开面板">▾</button>
-      <button id="refresh" class="ghost">刷新</button>
+      <button id="tokenbtn" class="ghost" title="Access token">🔑</button>
+      <button id="fold" class="ghost" title="Collapse / expand the panels">▾</button>
+      <button id="reloadbtn" class="ghost" title="Re-read the config file from disk">Reload</button>
+      <button id="refresh" class="ghost">Refresh</button>
     </div>
   </header>
 
   <main>
     <div id="authwall" class="authwall hidden">
       <div class="authbox">
-        <h3 id="authtitle">需要访问令牌</h3>
-        <p id="authmsg" class="muted">这台 deck 开启了令牌保护。把令牌填进下面即可连接。</p>
+        <h3 id="authtitle">Access token required</h3>
+        <p id="authmsg" class="muted">This deck is protected by a token. Paste it below to connect.</p>
         <div class="authrow">
           <input id="tokeninput" type="password" placeholder="deck-…" autocomplete="off" spellcheck="false">
-          <button id="tokenok" class="primary">连接</button>
+          <button id="tokenok" class="primary">Connect</button>
         </div>
-        <p class="muted tiny">令牌在设备上：<code>grep DECK_TOKEN ~/modeldeck/.env</code>
-          （或 <code>journalctl --user -u modeldeck | grep WebUI</code>）。
-          首次也可以直接打开 <code>http://&lt;地址&gt;:12688/?token=…</code>。</p>
+        <p class="muted tiny">The token lives on the device: <code>grep DECK_TOKEN ~/modeldeck/.env</code>
+          (or <code>journalctl --user -u modeldeck | grep WebUI</code>).
+          The first time you can also open <code>http://&lt;address&gt;:12688/?token=…</code>.</p>
       </div>
     </div>
 
@@ -43,7 +44,7 @@
         <summary class="panel-head">
           <h2>Events</h2>
           <span id="opsinfo" class="muted"></span>
-          <button id="eventclear" class="ghost tinybtn" title="清空下方记录">清空</button>
+          <button id="eventclear" class="ghost tinybtn" title="Clear the log below">Clear</button>
         </summary>
         <div id="ops" class="ops"></div>
         <pre id="events" class="events"></pre>
@@ -53,7 +54,7 @@
         <summary class="panel-head">
           <h2>Dashboard</h2>
           <span id="dashinfo" class="muted"></span>
-          <button id="copylink" class="ghost tinybtn" title="复制一个手机能打开的链接">复制链接</button>
+          <button id="copylink" class="ghost tinybtn" title="Copy a link a phone can open">Copy link</button>
         </summary>
         <div id="dashstrip" class="strip"></div>
         <div id="dash" class="grid"></div>
@@ -69,8 +70,8 @@
         <table id="entries" class="responsive">
           <thead>
             <tr>
-              <th>模型</th><th>状态</th><th>端口</th><th>在飞</th>
-              <th>RSS</th><th>VRAM</th><th>空闲</th><th>操作</th>
+              <th>Model</th><th>State</th><th>Port</th><th>Inflight</th>
+              <th>RSS</th><th>VRAM</th><th>Idle</th><th>Actions</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -81,7 +82,7 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Discover</h2>
-        <button id="scanbtn" class="primary">扫描脚本</button>
+        <button id="scanbtn" class="primary">Scan scripts</button>
         <span id="scaninfo" class="muted"></span>
       </div>
       <div id="scanresult" class="tablewrap"></div>
@@ -93,8 +94,8 @@
       <div class="modal-head">
         <h3 id="logtitle">logs</h3>
         <div class="modal-head-actions">
-          <button id="logclear" class="ghost">清屏</button>
-          <button id="logclose" class="ghost">关闭</button>
+          <button id="logclear" class="ghost">Clear</button>
+          <button id="logclose" class="ghost">Close</button>
         </div>
       </div>
       <pre id="logbody"></pre>
@@ -104,43 +105,19 @@
   <div id="editmodal" class="modal hidden">
     <div class="modal-box">
       <div class="modal-head">
-        <h3 id="edittitle">编辑</h3>
-        <button id="editclose" class="ghost">关闭</button>
+        <h3 id="edittitle">edit</h3>
+        <button id="editclose" class="ghost">Close</button>
       </div>
       <div class="editbody">
-        <label class="fld">启动脚本
-          <input id="ed_script" type="text" placeholder="/home/you/LLM/model.sh" spellcheck="false" autocapitalize="off">
-        </label>
-        <div class="editrow">
-          <label class="fld">显示名
-            <input id="ed_name" type="text" placeholder="（可留空）">
-          </label>
-          <label class="fld">端口
-            <input id="ed_port" type="number" min="1" max="65535" inputmode="numeric">
-          </label>
-          <label class="fld">就绪路径
-            <input id="ed_ready_path" type="text" placeholder="/health" spellcheck="false">
-          </label>
-        </div>
-        <label class="fld">参数（每行一个）
-          <textarea id="ed_args" rows="3" spellcheck="false" autocapitalize="off"></textarea>
-        </label>
-        <label class="fld">环境变量（每行一个 KEY=VALUE）
-          <textarea id="ed_env" rows="2" spellcheck="false" autocapitalize="off"></textarea>
-        </label>
-        <label class="fld">空闲回收 TTL（秒，-1 = 用默认，0 = 永不回收）
-          <input id="ed_ttl" type="number" min="-1" inputmode="numeric" placeholder="默认">
-        </label>
-        <details class="parsedbox">
-          <summary>脚本解析结果</summary>
-          <pre id="ed_parsed" class="parsed"></pre>
-        </details>
+        <p class="muted tiny editpath">config file: <code id="ed_path"></code></p>
+        <textarea id="ed_yaml" class="yamledit" spellcheck="false" autocapitalize="off"
+          autocorrect="off" wrap="off"></textarea>
         <div id="ed_msg" class="editmsg"></div>
       </div>
       <div class="modal-foot">
-        <span class="muted tiny">保存后点「重启」生效</span>
-        <button id="edsave" class="primary">保存</button>
-        <button id="edsave_run">保存并启动</button>
+        <span class="muted tiny">same YAML as the config file — or edit it with nano</span>
+        <button id="edsave" class="primary">Save</button>
+        <button id="edsave_run">Save &amp; run</button>
       </div>
     </div>
   </div>
